@@ -33,9 +33,6 @@ const INITIAL_TABS: TabItem[] = [
   { name: 'TESCO', gid: '1101532121' },
   { name: 'OVS', gid: '1369675807' },
   { name: 'Madam', gid: '1025651909' },
-  { name: 'Thread 56-91', gid: '653850102' },
-  { name: 'Elastic 56-91', gid: '365846287' },
-  { name: 'T-ELASTIC', gid: '1319035009' },
 ];
 
 export default function App() {
@@ -69,8 +66,15 @@ export default function App() {
       while ((match = regex.exec(html)) !== null) {
         const name = match[1];
         const gid = match[2];
-        // Filter out generic empty Sheet names unless they are the only ones
-        if (!name.startsWith('Sheet4') && !name.startsWith('Sheet9')) {
+        const lowerName = name.toLowerCase().trim();
+        // Filter out generic empty Sheet names and accessories tabs (Thread, Elastic, T-Elastic)
+        const isExcluded = 
+          lowerName.startsWith('sheet4') || 
+          lowerName.startsWith('sheet9') ||
+          lowerName.includes('thread') ||
+          lowerName.includes('elastic');
+
+        if (!isExcluded) {
           foundTabs.push({ name, gid });
         }
       }
