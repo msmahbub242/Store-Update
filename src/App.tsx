@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import Papa from 'papaparse';
 import { 
   Search, 
@@ -13,7 +13,9 @@ import {
   X,
   RefreshCw,
   Radio,
-  AlertTriangle
+  AlertTriangle,
+  Layers,
+  Sparkles
 } from 'lucide-react';
 
 const PUB_BASE = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q';
@@ -24,7 +26,6 @@ interface TabItem {
   gid: string;
 }
 
-// Initial fallback tabs if pubhtml is loading
 const INITIAL_TABS: TabItem[] = [
   { name: 'LC WAIKIKI(Tariq sir)', gid: '951520833' },
   { name: 'BR sujoy', gid: '1524254458' },
@@ -35,9 +36,43 @@ const INITIAL_TABS: TabItem[] = [
   { name: 'Madam', gid: '1025651909' },
 ];
 
+// Canonical column name normalizer to unify case differences across different buyer tabs
+const normalizeHeader = (rawKey: string): string | null => {
+  const k = rawKey.trim().toLowerCase();
+  if (!k || k.endsWith('_1') || k.endsWith('_2') || k.startsWith('__parsed_extra')) {
+    return null;
+  }
+  if (k.includes('file')) return 'File No';
+  if (k === 'po' || k.startsWith('po')) return 'PO';
+  if (k === 'style') return 'STYLE';
+  if (k === 'item') return 'ITEM';
+  if (k.includes('dzn')) return 'DZN';
+  if (k.includes('ship')) return 'SHIP DATE';
+  if (k.includes('fabric')) return 'Fabric Update';
+  if (k.includes('sewing') || (k.includes('accessories') && !k.includes('finishing'))) return 'Sewing Acc. Update';
+  if (k.includes('finishing')) return 'Finishing Acc. Update';
+  if (k.includes('remark')) return 'Remarks';
+  return rawKey.trim();
+};
+
+const STANDARD_COLUMN_ORDER = [
+  'Buyer Tab',
+  'File No',
+  'PO',
+  'STYLE',
+  'ITEM',
+  'DZN',
+  'SHIP DATE',
+  'Fabric Update',
+  'Sewing Acc. Update',
+  'Finishing Acc. Update',
+  'Remarks'
+];
+
 export default function App() {
   const [tabs, setTabs] = useState<TabItem[]>(INITIAL_TABS);
-  const [rawData, setRawData] = useState<any[]>([]);
+  // Store data for all tabs in a map: tabName -> rows[]
+  const [tabsData, setTabsData] = useState<Record<string, any[]>>({});
   const [activeTabName, setActiveTabName] = useState<string>(INITIAL_TABS[0].name);
   const [globalFilter, setGlobalFilter] = useState('');
   const [columnFilters, setColumnFilters] = useState<Record<string, string>>({});
@@ -52,8 +87,7 @@ export default function App() {
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const rowsPerPage = 12;
 
-  // 1. Dynamic Discovery of current Sheet Tabs and their GIDs directly from Google's pubhtml
-  // This completely solves the HTTP 400 error when Excel (.xlsx) files regenerate GIDs upon re-upload!
+  // 1. Discover tabs and GIDs dynamically from pubhtml
   const discoverTabs = useCallback(async (): Promise<TabItem[]> => {
     try {
       const res = await fetch(PUBHTML_URL);
@@ -67,7 +101,6 @@ export default function App() {
         const name = match[1];
         const gid = match[2];
         const lowerName = name.toLowerCase().trim();
-        // Filter out generic empty Sheet names and accessories tabs (Thread, Elastic, T-Elastic)
         const isExcluded = 
           lowerName.startsWith('sheet4') || 
           lowerName.startsWith('sheet9') ||
@@ -84,87 +117,95 @@ export default function App() {
         return foundTabs;
       }
     } catch (err) {
-      console.warn('Could not refresh pubhtml tabs dynamically, using existing tabs:', err);
+      console.warn('Could not refresh pubhtml tabs dynamically:', err);
     }
     return tabs;
   }, [tabs]);
 
-  // Current active tab item
-  const currentTab = useMemo(() => {
-    return tabs.find(t => t.name === activeTabName) || tabs[0] || INITIAL_TABS[0];
-  }, [tabs, activeTabName]);
+  // Helper to fetch and parse a single tab's CSV
+  const parseSingleTab = async (tabItem: TabItem): Promise<any[]> => {
+    const csvUrl = `${PUB_BASE}/pub?gid=${tabItem.gid}&single=true&output=csv`;
+    const response = await fetch(csvUrl);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status} on tab ${tabItem.name}`);
+    }
+    const csvText = await response.text();
+    const trimmed = csvText.trim();
+    if (trimmed.startsWith('<!DOCTYPE html') || trimmed.startsWith('<html')) {
+      throw new Error(`Google Sheet returned temporary HTML for ${tabItem.name}`);
+    }
 
-  // Fetch CSV for the selected tab
-  const fetchTabData = useCallback(async (tabToFetch: TabItem, isSilent = false) => {
-    if (!tabToFetch || !tabToFetch.gid) return;
+    return new Promise((resolve) => {
+      Papa.parse(csvText, {
+        header: true,
+        skipEmptyLines: 'greedy',
+        complete: (results) => {
+          if (!results.data || !Array.isArray(results.data)) {
+            resolve([]);
+            return;
+          }
+          const cleaned = (results.data as any[]).map(row => {
+            if (!row || typeof row !== 'object') return null;
+            const newRow: any = { _tabSource: tabItem.name };
+            Object.keys(row).forEach(key => {
+              const normKey = normalizeHeader(key);
+              if (normKey) {
+                const cellVal = row[key];
+                if (newRow[normKey] === undefined || newRow[normKey] === '') {
+                  newRow[normKey] = typeof cellVal === 'string' ? cellVal.trim() : cellVal;
+                }
+              }
+            });
+            return newRow;
+          }).filter(row => row && Object.values(row).some(v => v !== undefined && v !== null && v !== '' && v !== row._tabSource));
+          resolve(cleaned);
+        },
+        error: () => resolve([])
+      });
+    });
+  };
+
+  // Fetch all tabs in parallel so universal search has data from ALL tabs
+  const fetchAllTabs = useCallback(async (tabList: TabItem[], isSilent = false) => {
+    if (!tabList || tabList.length === 0) return;
 
     if (!isSilent) setIsLoading(true);
     setIsRefreshing(true);
 
     try {
-      const csvUrl = `${PUB_BASE}/pub?gid=${tabToFetch.gid}&single=true&output=csv`;
-      let response = await fetch(csvUrl);
-
-      // If Google returns 400, the GID changed in Google Drive! Re-discover live GIDs from pubhtml immediately!
-      if (!response.ok && response.status === 400) {
-        console.warn('GID changed on Google Drive. Re-discovering live tabs...');
-        const updatedTabs = await discoverTabs();
-        const freshTab = updatedTabs.find(t => t.name === tabToFetch.name) || updatedTabs[0];
-        if (freshTab && freshTab.gid !== tabToFetch.gid) {
-          const freshCsvUrl = `${PUB_BASE}/pub?gid=${freshTab.gid}&single=true&output=csv`;
-          response = await fetch(freshCsvUrl);
+      // First fetch active tab to provide instant user feedback
+      const activeObj = tabList.find(t => t.name === activeTabName) || tabList[0];
+      if (activeObj) {
+        try {
+          const activeRows = await parseSingleTab(activeObj);
+          setTabsData(prev => ({ ...prev, [activeObj.name]: activeRows }));
+          setLastUpdated(new Date());
+          setSyncNotice(null);
+        } catch (e: any) {
+          console.warn('Initial single tab fetch issue:', e.message);
         }
       }
 
-      if (!response.ok) {
-        throw new Error(`Google Sheets responded with HTTP status ${response.status}`);
-      }
+      // Then fetch all other tabs in parallel in the background
+      const results = await Promise.allSettled(
+        tabList.map(async tab => {
+          const rows = await parseSingleTab(tab);
+          return { name: tab.name, rows };
+        })
+      );
 
-      const csvText = await response.text();
-      const trimmed = csvText.trim();
-
-      if (trimmed.startsWith('<!DOCTYPE html') || trimmed.startsWith('<html')) {
-        throw new Error('Google is updating the published sheet. Preserving current view.');
-      }
-
-      Papa.parse(csvText, {
-        header: true,
-        skipEmptyLines: 'greedy',
-        complete: (results) => {
-          if (!results.data || !Array.isArray(results.data) || results.data.length === 0) {
-            setSyncNotice('Waiting for spreadsheet rows to load...');
-            return;
-          }
-
-          const cleanedData = (results.data as any[]).map(row => {
-            if (!row || typeof row !== 'object') return {};
-            const newRow: any = {};
-            Object.keys(row).forEach(key => {
-              const trimmedKey = key.trim();
-              if (
-                trimmedKey && 
-                !trimmedKey.endsWith('_1') && 
-                !trimmedKey.endsWith('_2') && 
-                !trimmedKey.startsWith('__parsed_extra')
-              ) {
-                const cellVal = row[key];
-                newRow[trimmedKey] = typeof cellVal === 'string' ? cellVal.trim() : cellVal;
-              }
-            });
-            return newRow;
-          }).filter(row => Object.values(row).some(v => v !== undefined && v !== null && v !== ''));
-
-          if (cleanedData.length > 0) {
-            setRawData(cleanedData);
-            setSyncNotice(null);
-            setLastUpdated(new Date());
-          }
-        },
-        error: (err) => {
-          console.error('CSV Parsing error:', err);
-          setSyncNotice(`Parsing notice: ${err.message}`);
+      const newMap: Record<string, any[]> = {};
+      results.forEach(res => {
+        if (res.status === 'fulfilled') {
+          newMap[res.value.name] = res.value.rows;
         }
       });
+
+      if (Object.keys(newMap).length > 0) {
+        setTabsData(prev => ({ ...prev, ...newMap }));
+        setLastUpdated(new Date());
+        setSyncNotice(null);
+      }
     } catch (err: any) {
       console.warn('Sync notice:', err.message);
       setSyncNotice(err.message || 'Connecting to Google Sheet...');
@@ -172,57 +213,103 @@ export default function App() {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [discoverTabs]);
+  }, [activeTabName]);
 
-  // Initial load: discover tabs and fetch first tab
+  // Initial load
   useEffect(() => {
     (async () => {
       const freshTabs = await discoverTabs();
-      const initialTab = freshTabs.find(t => t.name === activeTabName) || freshTabs[0];
-      if (initialTab) {
-        fetchTabData(initialTab, false);
-      }
+      await fetchAllTabs(freshTabs, false);
     })();
   }, []);
 
-  // When tab selection changes
-  const handleTabChange = (name: string) => {
-    setActiveTabName(name);
-    setCurrentPage(1);
-    setColumnFilters({});
-    const target = tabs.find(t => t.name === name);
-    if (target) {
-      fetchTabData(target, false);
-    }
-  };
-
-  // Background Auto-Sync (Every 20 seconds, re-validates latest data and GIDs)
+  // Background Auto-Sync every 25 seconds
   useEffect(() => {
     if (!isAutoRefreshEnabled) return;
-
-    const intervalId = setInterval(async () => {
-      // Re-fetch current tab
-      if (currentTab) {
-        fetchTabData(currentTab, true);
-      }
-    }, 20000);
-
+    const intervalId = setInterval(() => {
+      fetchAllTabs(tabs, true);
+    }, 25000);
     return () => clearInterval(intervalId);
-  }, [isAutoRefreshEnabled, currentTab, fetchTabData]);
+  }, [isAutoRefreshEnabled, tabs, fetchAllTabs]);
 
-  // All detected columns in the current data
+  // Determine if Universal Search mode is active (when user types something in search box)
+  const isUniversalSearchActive = globalFilter.trim().length > 0;
+
+  // Active dataset: if universal search is active, use all rows from ALL tabs; otherwise selected tab
+  const baseData = useMemo(() => {
+    if (isUniversalSearchActive || activeTabName === '__ALL__') {
+      const allRows: any[] = [];
+      Object.entries(tabsData).forEach(([tabName, rows]) => {
+        rows.forEach(r => {
+          allRows.push({ ...r, _tabSource: tabName });
+        });
+      });
+      return allRows;
+    }
+    return tabsData[activeTabName] || [];
+  }, [isUniversalSearchActive, activeTabName, tabsData]);
+
+  // Filtered dataset combining global search and column header filters
+  const filteredData = useMemo(() => {
+    return baseData.filter(row => {
+      if (!row) return false;
+
+      // Global Search across ALL tabs
+      if (globalFilter.trim()) {
+        const query = globalFilter.toLowerCase();
+        const matchesGlobal = Object.entries(row).some(([k, val]) => {
+          if (k.startsWith('_')) return false;
+          return String(val ?? '').toLowerCase().includes(query);
+        });
+        if (!matchesGlobal) return false;
+      }
+
+      // Column-Specific Header Filters
+      for (const [col, colFilterVal] of Object.entries(columnFilters)) {
+        if (!colFilterVal || !colFilterVal.trim()) continue;
+        const cellValue = String(row[col] ?? '').toLowerCase();
+        if (!cellValue.includes(colFilterVal.toLowerCase().trim())) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [baseData, globalFilter, columnFilters]);
+
+  // All detected columns in the current dataset (deduplicated & neatly ordered)
   const allColumns = useMemo(() => {
-    if (rawData.length === 0) return [];
+    if (baseData.length === 0) return [];
     const keys = new Set<string>();
-    rawData.forEach(row => {
+    baseData.forEach(row => {
       if (row && typeof row === 'object') {
         Object.keys(row).forEach(k => {
-          if (k) keys.add(k);
+          if (k && !k.startsWith('_')) keys.add(k);
         });
       }
     });
-    return Array.from(keys);
-  }, [rawData]);
+
+    const ordered: string[] = [];
+    if (isUniversalSearchActive || activeTabName === '__ALL__') {
+      ordered.push('Buyer Tab');
+    }
+
+    // Add standard canonical columns in sequence
+    STANDARD_COLUMN_ORDER.forEach(col => {
+      if (col !== 'Buyer Tab' && keys.has(col)) {
+        ordered.push(col);
+      }
+    });
+
+    // Add any remaining custom columns
+    keys.forEach(k => {
+      if (k !== 'Buyer Tab' && !ordered.includes(k)) {
+        ordered.push(k);
+      }
+    });
+
+    return ordered;
+  }, [baseData, isUniversalSearchActive, activeTabName]);
 
   // Columns currently visible
   const visibleColumns = useMemo(() => {
@@ -240,8 +327,8 @@ export default function App() {
   const showAllColumns = () => setHiddenColumns([]);
   
   const hideAllColumns = () => {
-    if (allColumns.length > 3) {
-      setHiddenColumns(allColumns.slice(4));
+    if (allColumns.length > 4) {
+      setHiddenColumns(allColumns.slice(5));
     }
   };
 
@@ -250,34 +337,7 @@ export default function App() {
     setCurrentPage(1);
   };
 
-  // Filtered dataset combining global filter and header column filters
-  const filteredData = useMemo(() => {
-    return rawData.filter(row => {
-      if (!row) return false;
-
-      // Global Search
-      if (globalFilter.trim()) {
-        const query = globalFilter.toLowerCase();
-        const matchesGlobal = Object.values(row).some(val => 
-          String(val ?? '').toLowerCase().includes(query)
-        );
-        if (!matchesGlobal) return false;
-      }
-
-      // Column-Specific Header Filters
-      for (const [col, colFilterVal] of Object.entries(columnFilters)) {
-        if (!colFilterVal || !colFilterVal.trim()) continue;
-        const cellValue = String(row[col] ?? '').toLowerCase();
-        if (!cellValue.includes(colFilterVal.toLowerCase().trim())) {
-          return false;
-        }
-      }
-
-      return true;
-    });
-  }, [rawData, globalFilter, columnFilters]);
-
-  // Total DZN calculation (checks DZN or DZN QTY in various tabs)
+  // Total DZN calculation
   const totalDzn = useMemo(() => {
     return filteredData.reduce((acc, row) => {
       if (!row) return acc;
@@ -286,6 +346,17 @@ export default function App() {
       return acc + (isNaN(val) ? 0 : val);
     }, 0);
   }, [filteredData]);
+
+  // Count which tabs have matches during universal search
+  const tabMatchesCount = useMemo(() => {
+    if (!isUniversalSearchActive) return {};
+    const counts: Record<string, number> = {};
+    filteredData.forEach(row => {
+      const src = row._tabSource || 'Unknown';
+      counts[src] = (counts[src] || 0) + 1;
+    });
+    return counts;
+  }, [filteredData, isUniversalSearchActive]);
 
   // Pagination calculation
   const totalPages = Math.max(1, Math.ceil(filteredData.length / rowsPerPage));
@@ -346,14 +417,14 @@ export default function App() {
                 isAutoRefreshEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
               }`}
             >
-              {isAutoRefreshEnabled ? 'ACTIVE (20s)' : 'PAUSED'}
+              {isAutoRefreshEnabled ? 'ACTIVE (25s)' : 'PAUSED'}
             </button>
           </div>
 
           <span className="text-slate-300">•</span>
 
           <div>
-            Last sync:{' '}
+            Last live sync:{' '}
             <span className="font-semibold text-slate-700">
               {lastUpdated ? lastUpdated.toLocaleTimeString() : 'Connecting...'}
             </span>
@@ -363,10 +434,7 @@ export default function App() {
 
           <button
             onClick={() => {
-              discoverTabs().then(freshTabs => {
-                const target = freshTabs.find(t => t.name === activeTabName) || freshTabs[0];
-                if (target) fetchTabData(target, false);
-              });
+              discoverTabs().then(freshTabs => fetchAllTabs(freshTabs, false));
             }}
             disabled={isRefreshing}
             className="flex items-center gap-1 font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-md transition cursor-pointer disabled:opacity-50"
@@ -385,7 +453,7 @@ export default function App() {
             <span>{syncNotice}</span>
           </div>
           <button
-            onClick={() => fetchTabData(currentTab, false)}
+            onClick={() => fetchAllTabs(tabs, false)}
             className="px-2.5 py-1 bg-amber-200 hover:bg-amber-300 text-amber-900 rounded text-xs font-bold transition cursor-pointer"
           >
             Retry
@@ -397,7 +465,9 @@ export default function App() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Orders</p>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+              {isUniversalSearchActive ? 'Matched Orders (All Tabs)' : 'Total Orders'}
+            </p>
             <p className="text-2xl font-extrabold text-slate-900 mt-1">{filteredData.length}</p>
           </div>
           <div className="h-12 w-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-lg border border-blue-100">
@@ -407,7 +477,9 @@ export default function App() {
 
         <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total DZN</p>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+              {isUniversalSearchActive ? 'Matched DZN (All Tabs)' : 'Total DZN'}
+            </p>
             <p className="text-2xl font-extrabold text-indigo-900 mt-1">
               {totalDzn.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
             </p>
@@ -431,9 +503,9 @@ export default function App() {
 
         <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Active Tab</p>
-            <p className="text-base font-bold text-emerald-700 mt-1 truncate max-w-[150px]" title={activeTabName}>
-              {activeTabName}
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Search Scope</p>
+            <p className="text-sm font-bold text-emerald-700 mt-1 truncate max-w-[150px]">
+              {isUniversalSearchActive ? 'All Buyer Tabs' : activeTabName}
             </p>
           </div>
           <div className="h-12 w-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-lg border border-emerald-100">
@@ -442,86 +514,140 @@ export default function App() {
         </div>
       </div>
 
-      {/* Buyer Tabs (Dynamically Discovered & Updated) */}
+      {/* 2. SEARCH & ACTION BAR - MOVED ABOVE THE TAB SWITCHER */}
+      <div className="bg-white p-4 rounded-2xl shadow-xs border border-slate-200 mb-4">
+        <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+          {/* Global Search across ALL tabs */}
+          <div className="relative flex-1">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-blue-600" size={19} />
+            <input
+              className="w-full pl-10 pr-10 py-3 bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-300 rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition shadow-2xs"
+              placeholder="🔍 Search across ALL tabs & buyers (by Style, PO, Buyer, Item, Remark...)"
+              value={globalFilter}
+              onChange={(e) => {
+                setGlobalFilter(e.target.value);
+                setCurrentPage(1);
+              }}
+            />
+            {globalFilter && (
+              <button 
+                onClick={() => {
+                  setGlobalFilter('');
+                  setCurrentPage(1);
+                }}
+                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer p-1"
+                title="Clear Search"
+              >
+                <X size={16} />
+              </button>
+            )}
+          </div>
+
+          {/* Action Buttons */}
+          <div className="flex items-center gap-2">
+            {/* Header Filters Toggle */}
+            <button
+              onClick={() => setShowHeaderFilterRow(prev => !prev)}
+              className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
+                showHeaderFilterRow || Object.values(columnFilters).some(Boolean)
+                  ? 'bg-indigo-50 text-indigo-700 border-indigo-300'
+                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+              }`}
+              title="Toggle individual column header filters"
+            >
+              <Filter size={15} />
+              <span>Column Filters</span>
+              {Object.values(columnFilters).filter(Boolean).length > 0 && (
+                <span className="bg-indigo-600 text-white rounded-full px-1.5 py-0.2 text-[10px] font-bold">
+                  {Object.values(columnFilters).filter(Boolean).length}
+                </span>
+              )}
+            </button>
+
+            {/* Column Visibility Control Button */}
+            <button
+              onClick={() => setIsColumnPanelOpen(prev => !prev)}
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
+                isColumnPanelOpen
+                  ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+              }`}
+            >
+              <SlidersHorizontal size={15} />
+              <span>Customize Columns</span>
+              <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                isColumnPanelOpen ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
+              }`}>
+                {visibleColumns.length}
+              </span>
+            </button>
+          </div>
+        </div>
+
+        {/* Universal Search Active Notice Badge */}
+        {isUniversalSearchActive && (
+          <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex items-center gap-2 text-blue-800 font-semibold bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
+              <Sparkles size={14} className="text-blue-600 animate-spin" />
+              <span>
+                Universal Search Active: Found <span className="font-extrabold text-blue-900">{filteredData.length}</span> matching order(s) across all sheets!
+              </span>
+            </div>
+
+            {/* Quick breakdown of matches per tab */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="text-slate-400">Found in:</span>
+              {Object.entries(tabMatchesCount).map(([tName, count]) => (
+                <span key={tName} className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-[11px] font-medium border border-slate-200">
+                  {tName}: <strong className="text-blue-700">{count}</strong>
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 3. TAB SWITCHER - PLACED DIRECTLY UNDER THE SEARCH BOX */}
       <div className="flex items-center space-x-2 overflow-x-auto pb-2 mb-6 scrollbar-none">
+        <button
+          className={`flex items-center gap-1.5 px-4.5 py-2.5 rounded-xl font-bold text-sm transition-all whitespace-nowrap cursor-pointer ${
+            !isUniversalSearchActive && activeTabName === '__ALL__'
+              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/25 ring-2 ring-indigo-600 ring-offset-2'
+              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100 shadow-xs'
+          }`}
+          onClick={() => {
+            setGlobalFilter('');
+            setActiveTabName('__ALL__');
+            setCurrentPage(1);
+          }}
+        >
+          <Layers size={15} />
+          <span>All Buyers (Combined)</span>
+        </button>
+
         {tabs.map(tab => (
           <button
             key={tab.name}
             className={`px-4.5 py-2.5 rounded-xl font-bold text-sm transition-all whitespace-nowrap cursor-pointer ${
-              activeTabName === tab.name
+              !isUniversalSearchActive && activeTabName === tab.name
                 ? 'bg-blue-600 text-white shadow-md shadow-blue-500/25 ring-2 ring-blue-600 ring-offset-2'
                 : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100 hover:text-slate-900 shadow-xs'
             }`}
-            onClick={() => handleTabChange(tab.name)}
+            onClick={() => {
+              setGlobalFilter('');
+              setActiveTabName(tab.name);
+              setCurrentPage(1);
+              setColumnFilters({});
+            }}
           >
             {tab.name}
-          </button>
-        ))}
-      </div>
-
-      {/* Action Bar (Search + Column Visibility + Filter Toggle) */}
-      <div className="bg-white p-4 rounded-2xl shadow-xs border border-slate-200 mb-4 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-        {/* Global Search */}
-        <div className="relative flex-1">
-          <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-          <input
-            className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
-            placeholder="Search by Buyer, PO, Style, Item, Remark, etc..."
-            value={globalFilter}
-            onChange={(e) => {
-              setGlobalFilter(e.target.value);
-              setCurrentPage(1);
-            }}
-          />
-          {globalFilter && (
-            <button 
-              onClick={() => setGlobalFilter('')}
-              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
-            >
-              <X size={16} />
-            </button>
-          )}
-        </div>
-
-        {/* Action Controls */}
-        <div className="flex items-center gap-2">
-          {/* Header Filters Toggle */}
-          <button
-            onClick={() => setShowHeaderFilterRow(prev => !prev)}
-            className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
-              showHeaderFilterRow || Object.values(columnFilters).some(Boolean)
-                ? 'bg-indigo-50 text-indigo-700 border-indigo-300'
-                : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-            }`}
-            title="Toggle individual column header filters"
-          >
-            <Filter size={15} />
-            <span>Column Filters</span>
-            {Object.values(columnFilters).filter(Boolean).length > 0 && (
-              <span className="bg-indigo-600 text-white rounded-full px-1.5 py-0.2 text-[10px] font-bold">
-                {Object.values(columnFilters).filter(Boolean).length}
+            {tabsData[tab.name] && (
+              <span className="ml-1.5 text-xs opacity-75 font-normal">
+                ({tabsData[tab.name].length})
               </span>
             )}
           </button>
-
-          {/* Column Visibility Control Button */}
-          <button
-            onClick={() => setIsColumnPanelOpen(prev => !prev)}
-            className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
-              isColumnPanelOpen
-                ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-            }`}
-          >
-            <SlidersHorizontal size={15} />
-            <span>Customize Columns</span>
-            <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
-              isColumnPanelOpen ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
-            }`}>
-              {visibleColumns.length}
-            </span>
-          </button>
-        </div>
+        ))}
       </div>
 
       {/* Column Visibility Panel (Expandable) */}
@@ -600,7 +726,7 @@ export default function App() {
           {isLoading ? (
             <div className="py-20 text-center text-slate-500">
               <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent mb-3"></div>
-              <p className="font-semibold text-sm">Loading latest data from Google Sheet...</p>
+              <p className="font-semibold text-sm">Loading data from Google Sheets...</p>
             </div>
           ) : visibleColumns.length === 0 ? (
             <div className="py-16 text-center text-slate-500">
@@ -620,7 +746,9 @@ export default function App() {
                   {visibleColumns.map((col) => (
                     <th 
                       key={col} 
-                      className="p-3.5 font-bold text-xs uppercase tracking-wider border border-slate-300 bg-slate-100 whitespace-nowrap select-none"
+                      className={`p-3.5 font-bold text-xs uppercase tracking-wider border border-slate-300 whitespace-nowrap select-none ${
+                        col === 'Buyer Tab' ? 'bg-indigo-100 text-indigo-950 font-extrabold' : 'bg-slate-100'
+                      }`}
                     >
                       <div className="flex items-center justify-between gap-2">
                         <span>{col}</span>
@@ -634,7 +762,7 @@ export default function App() {
                   ))}
                 </tr>
 
-                {/* Optional In-Header Filter Row */}
+                {/* In-Header Filter Row */}
                 {showHeaderFilterRow && (
                   <tr className="bg-slate-50 border-b border-slate-300">
                     {visibleColumns.map((col) => (
@@ -656,7 +784,9 @@ export default function App() {
                 {currentRows.length === 0 ? (
                   <tr>
                     <td colSpan={visibleColumns.length} className="py-12 text-center text-slate-400 border border-slate-300">
-                      No matching records found.
+                      {isUniversalSearchActive 
+                        ? `No orders matching "${globalFilter}" found across all tabs.` 
+                        : 'No matching records found in this sheet.'}
                     </td>
                   </tr>
                 ) : (
@@ -666,6 +796,16 @@ export default function App() {
                       className={`${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-blue-50/40 transition-colors`}
                     >
                       {visibleColumns.map((col) => {
+                        if (col === 'Buyer Tab') {
+                          return (
+                            <td key={col} className="p-3 text-xs font-bold text-indigo-800 bg-indigo-50/50 border border-slate-300 whitespace-nowrap">
+                              <span className="bg-indigo-100 px-2.5 py-1 rounded-md border border-indigo-200">
+                                {row._tabSource || activeTabName}
+                              </span>
+                            </td>
+                          );
+                        }
+
                         const val = row[col];
                         const isStatus = isStatusColumn(col);
                         return (
@@ -691,6 +831,11 @@ export default function App() {
             Showing <span className="font-bold text-slate-900">{filteredData.length > 0 ? indexOfFirstRow + 1 : 0}</span> to{' '}
             <span className="font-bold text-slate-900">{Math.min(indexOfLastRow, filteredData.length)}</span> of{' '}
             <span className="font-bold text-slate-900">{filteredData.length}</span> rows
+            {isUniversalSearchActive && (
+              <span className="ml-2 text-blue-700 font-semibold bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                Across All Tabs
+              </span>
+            )}
           </p>
 
           <div className="flex items-center space-x-2">
