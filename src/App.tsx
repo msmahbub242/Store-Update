@@ -5,7 +5,7 @@ export default function App() {
   const [data, setData] = useState<any[]>([]);
   const [filter, setFilter] = useState('');
   const [needsAuth, setNeedsAuth] = useState(true);
-  const [spreadsheetId, setSpreadsheetId] = useState('YOUR_SPREADSHEET_ID_HERE');
+  const [spreadsheetId, setSpreadsheetId] = useState('1kXr9Dxp59eZTAs_v07budEQXOrwZpUml');
   const [loginError, setLoginError] = useState<string | null>(null);
 
   useEffect(() => {
