@@ -381,17 +381,23 @@ export default function App() {
       return <span className="text-slate-400 italic text-xs">-</span>;
     }
     const isOk = text.toLowerCase() === 'ok';
+    const isShort = text.length <= 10 && !text.includes('\n');
+
     return (
-      <span 
-        className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold border shadow-2xs tracking-wide ${
+      <div 
+        className={`inline-block text-xs font-semibold border shadow-2xs transition-all ${
+          isShort 
+            ? 'px-2.5 py-1 rounded-full text-center tracking-wide' 
+            : 'px-3 py-2 rounded-xl text-left leading-relaxed break-words whitespace-normal max-w-[260px]'
+        } ${
           isOk 
             ? 'bg-emerald-100 text-emerald-800 border-emerald-300' 
             : 'bg-rose-100 text-rose-800 border-rose-300'
         }`}
       >
-        {isOk && <Check size={12} className="mr-1 inline stroke-[3]" />}
-        {text}
-      </span>
+        {isOk && <Check size={12} className="mr-1 inline stroke-[3] -mt-0.5" />}
+        <span className="whitespace-pre-line">{text}</span>
+      </div>
     );
   };
 
@@ -743,23 +749,28 @@ export default function App() {
               <thead>
                 {/* Main Table Column Header */}
                 <tr className="bg-slate-100 text-slate-800">
-                  {visibleColumns.map((col) => (
-                    <th 
-                      key={col} 
-                      className={`p-3.5 font-bold text-xs uppercase tracking-wider border border-slate-300 whitespace-nowrap select-none ${
-                        col === 'Buyer Tab' ? 'bg-indigo-100 text-indigo-950 font-extrabold' : 'bg-slate-100'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2">
-                        <span>{col}</span>
-                        {isStatusColumn(col) && (
-                          <span className="text-[10px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-normal normal-case">
-                            status
-                          </span>
-                        )}
-                      </div>
-                    </th>
-                  ))}
+                  {visibleColumns.map((col) => {
+                    const isStatus = isStatusColumn(col);
+                    const isRemark = col.toLowerCase().includes('remark');
+                    const allowWrap = isStatus || isRemark;
+                    return (
+                      <th 
+                        key={col} 
+                        className={`p-3.5 font-bold text-xs uppercase tracking-wider border border-slate-300 select-none ${
+                          col === 'Buyer Tab' ? 'bg-indigo-100 text-indigo-950 font-extrabold' : 'bg-slate-100'
+                        } ${allowWrap ? 'min-w-[170px] max-w-[280px]' : 'whitespace-nowrap'}`}
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <span>{col}</span>
+                          {isStatus && (
+                            <span className="text-[10px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-normal normal-case">
+                              status
+                            </span>
+                          )}
+                        </div>
+                      </th>
+                    );
+                  })}
                 </tr>
 
                 {/* In-Header Filter Row */}
@@ -798,8 +809,8 @@ export default function App() {
                       {visibleColumns.map((col) => {
                         if (col === 'Buyer Tab') {
                           return (
-                            <td key={col} className="p-3 text-xs font-bold text-indigo-800 bg-indigo-50/50 border border-slate-300 whitespace-nowrap">
-                              <span className="bg-indigo-100 px-2.5 py-1 rounded-md border border-indigo-200">
+                            <td key={col} className="p-3 text-xs font-bold text-indigo-800 bg-indigo-50/50 border border-slate-300 whitespace-nowrap align-top">
+                              <span className="bg-indigo-100 px-2.5 py-1 rounded-md border border-indigo-200 inline-block">
                                 {row._tabSource || activeTabName}
                               </span>
                             </td>
@@ -808,12 +819,27 @@ export default function App() {
 
                         const val = row[col];
                         const isStatus = isStatusColumn(col);
+                        const isRemark = col.toLowerCase().includes('remark');
+                        const allowWrap = isStatus || isRemark;
+
                         return (
                           <td 
                             key={col} 
-                            className="p-3 text-sm text-slate-800 border border-slate-300 whitespace-nowrap"
+                            className={`p-3 text-sm text-slate-800 border border-slate-300 ${
+                              allowWrap 
+                                ? 'whitespace-normal break-words min-w-[170px] max-w-[280px] align-top' 
+                                : 'whitespace-nowrap align-top'
+                            }`}
                           >
-                            {isStatus ? getStatusPill(val) : (val !== undefined && val !== null && val !== '' ? val : '-')}
+                            {isStatus 
+                              ? getStatusPill(val) 
+                              : (val !== undefined && val !== null && val !== '' ? (
+                                  isRemark ? (
+                                    <div className="leading-relaxed text-slate-700 text-xs whitespace-pre-line break-words max-w-[260px]">
+                                      {val}
+                                    </div>
+                                  ) : val
+                                ) : '-')}
                           </td>
                         );
                       })}
@@ -863,6 +889,21 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* Footer Credit */}
+      <footer className="mt-12 pt-6 pb-6 border-t border-slate-200 text-center">
+        <div className="inline-flex flex-col sm:flex-row items-center justify-center gap-1.5 sm:gap-2 px-6 py-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs text-xs text-slate-600">
+          <span className="font-semibold text-slate-500">Designed & Maintained by:</span>
+          <span className="font-extrabold text-blue-700 text-sm tracking-wide">Md Mahbubur Rahman</span>
+          <span className="hidden sm:inline text-slate-300">•</span>
+          <span className="font-semibold text-slate-700">Store Department</span>
+          <span className="hidden sm:inline text-slate-300">•</span>
+          <span className="font-bold text-slate-800">
+            Felix Fashions Ltd <span className="font-normal text-slate-500">(Four H Group)</span>
+          </span>
+        </div>
+      </footer>
     </div>
   );
 }
+
