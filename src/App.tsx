@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import Papa from 'papaparse';
 import { 
   Search, 
@@ -16,22 +16,32 @@ import {
   AlertTriangle
 } from 'lucide-react';
 
-const SHEET_BASE = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q/pub';
+const PUB_BASE = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q';
+const PUBHTML_URL = `${PUB_BASE}/pubhtml`;
 
-// Verified active tab GIDs from your published Google Sheet
-const TABS = [
-  { name: 'LC WAIKIKI (Tariq sir)', gid: '458017748' },
-  { name: 'BR sujoy', gid: '1918978384' },
-  { name: 'BR Fahim', gid: '1956719815' },
-  { name: 'Monoprix', gid: '494748923' }, // fallback or mapped
-  { name: 'TESCO', gid: '1026758247' },
-  { name: 'OVS', gid: '1243619856' },
-  { name: 'Madam', gid: '778006127' },
+interface TabItem {
+  name: string;
+  gid: string;
+}
+
+// Initial fallback tabs if pubhtml is loading
+const INITIAL_TABS: TabItem[] = [
+  { name: 'LC WAIKIKI(Tariq sir)', gid: '951520833' },
+  { name: 'BR sujoy', gid: '1524254458' },
+  { name: 'BR Fahim', gid: '1304576963' },
+  { name: 'Monoprix', gid: '793642162' },
+  { name: 'TESCO', gid: '1101532121' },
+  { name: 'OVS', gid: '1369675807' },
+  { name: 'Madam', gid: '1025651909' },
+  { name: 'Thread 56-91', gid: '653850102' },
+  { name: 'Elastic 56-91', gid: '365846287' },
+  { name: 'T-ELASTIC', gid: '1319035009' },
 ];
 
 export default function App() {
+  const [tabs, setTabs] = useState<TabItem[]>(INITIAL_TABS);
   const [rawData, setRawData] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState(TABS[0].name);
+  const [activeTabName, setActiveTabName] = useState<string>(INITIAL_TABS[0].name);
   const [globalFilter, setGlobalFilter] = useState('');
   const [columnFilters, setColumnFilters] = useState<Record<string, string>>({});
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
@@ -42,36 +52,75 @@ export default function App() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isAutoRefreshEnabled, setIsAutoRefreshEnabled] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const rowsPerPage = 12;
 
-  const currentTabObj = useMemo(() => {
-    return TABS.find(t => t.name === activeTab) || TABS[0];
-  }, [activeTab]);
+  // 1. Dynamic Discovery of current Sheet Tabs and their GIDs directly from Google's pubhtml
+  // This completely solves the HTTP 400 error when Excel (.xlsx) files regenerate GIDs upon re-upload!
+  const discoverTabs = useCallback(async (): Promise<TabItem[]> => {
+    try {
+      const res = await fetch(PUBHTML_URL);
+      if (!res.ok) return tabs;
+      const html = await res.text();
+      
+      const regex = /items\.push\(\{name:\s*"([^"]+)",\s*pageUrl:[^}]+gid:\s*"([^"]+)"/g;
+      const foundTabs: TabItem[] = [];
+      let match;
+      while ((match = regex.exec(html)) !== null) {
+        const name = match[1];
+        const gid = match[2];
+        // Filter out generic empty Sheet names unless they are the only ones
+        if (!name.startsWith('Sheet4') && !name.startsWith('Sheet9')) {
+          foundTabs.push({ name, gid });
+        }
+      }
 
-  // Construct standard valid Google Sheets CSV URL without non-standard params
-  const currentCsvUrl = useMemo(() => {
-    return `${SHEET_BASE}?gid=${currentTabObj.gid}&single=true&output=csv`;
-  }, [currentTabObj]);
+      if (foundTabs.length > 0) {
+        setTabs(foundTabs);
+        return foundTabs;
+      }
+    } catch (err) {
+      console.warn('Could not refresh pubhtml tabs dynamically, using existing tabs:', err);
+    }
+    return tabs;
+  }, [tabs]);
 
-  const fetchCsvData = useCallback(async (csvUrl: string, isSilent = false) => {
+  // Current active tab item
+  const currentTab = useMemo(() => {
+    return tabs.find(t => t.name === activeTabName) || tabs[0] || INITIAL_TABS[0];
+  }, [tabs, activeTabName]);
+
+  // Fetch CSV for the selected tab
+  const fetchTabData = useCallback(async (tabToFetch: TabItem, isSilent = false) => {
+    if (!tabToFetch || !tabToFetch.gid) return;
+
     if (!isSilent) setIsLoading(true);
     setIsRefreshing(true);
 
     try {
-      // Standard CORS fetch without custom headers to avoid CORS preflight rejection by Google
-      const response = await fetch(csvUrl);
+      const csvUrl = `${PUB_BASE}/pub?gid=${tabToFetch.gid}&single=true&output=csv`;
+      let response = await fetch(csvUrl);
+
+      // If Google returns 400, the GID changed in Google Drive! Re-discover live GIDs from pubhtml immediately!
+      if (!response.ok && response.status === 400) {
+        console.warn('GID changed on Google Drive. Re-discovering live tabs...');
+        const updatedTabs = await discoverTabs();
+        const freshTab = updatedTabs.find(t => t.name === tabToFetch.name) || updatedTabs[0];
+        if (freshTab && freshTab.gid !== tabToFetch.gid) {
+          const freshCsvUrl = `${PUB_BASE}/pub?gid=${freshTab.gid}&single=true&output=csv`;
+          response = await fetch(freshCsvUrl);
+        }
+      }
 
       if (!response.ok) {
         throw new Error(`Google Sheets responded with HTTP status ${response.status}`);
       }
 
       const csvText = await response.text();
-      const trimmedText = csvText.trim();
+      const trimmed = csvText.trim();
 
-      // Check if Google returned an HTML error page (e.g. invalid permissions or publishing delay)
-      if (trimmedText.startsWith('<!DOCTYPE html') || trimmedText.startsWith('<html')) {
-        throw new Error('Google Sheet returned a temporary HTML page instead of CSV data. Google may still be syncing changes.');
+      if (trimmed.startsWith('<!DOCTYPE html') || trimmed.startsWith('<html')) {
+        throw new Error('Google is updating the published sheet. Preserving current view.');
       }
 
       Papa.parse(csvText, {
@@ -79,17 +128,21 @@ export default function App() {
         skipEmptyLines: 'greedy',
         complete: (results) => {
           if (!results.data || !Array.isArray(results.data) || results.data.length === 0) {
-            setSyncError('Received empty data from Google Sheet.');
+            setSyncNotice('Waiting for spreadsheet rows to load...');
             return;
           }
 
-          // Clean data: remove blank keys and metadata like _1, _2
           const cleanedData = (results.data as any[]).map(row => {
             if (!row || typeof row !== 'object') return {};
             const newRow: any = {};
             Object.keys(row).forEach(key => {
               const trimmedKey = key.trim();
-              if (trimmedKey && !trimmedKey.endsWith('_1') && !trimmedKey.endsWith('_2') && !trimmedKey.startsWith('__parsed_extra')) {
+              if (
+                trimmedKey && 
+                !trimmedKey.endsWith('_1') && 
+                !trimmedKey.endsWith('_2') && 
+                !trimmedKey.startsWith('__parsed_extra')
+              ) {
                 const cellVal = row[key];
                 newRow[trimmedKey] = typeof cellVal === 'string' ? cellVal.trim() : cellVal;
               }
@@ -99,41 +152,59 @@ export default function App() {
 
           if (cleanedData.length > 0) {
             setRawData(cleanedData);
-            setSyncError(null);
+            setSyncNotice(null);
             setLastUpdated(new Date());
           }
         },
         error: (err) => {
           console.error('CSV Parsing error:', err);
-          setSyncError(`Parsing error: ${err.message}`);
+          setSyncNotice(`Parsing notice: ${err.message}`);
         }
       });
     } catch (err: any) {
-      console.error('Error fetching CSV:', err);
-      setSyncError(err.message || 'Unable to fetch updated data from Google Sheet.');
+      console.warn('Sync notice:', err.message);
+      setSyncNotice(err.message || 'Connecting to Google Sheet...');
     } finally {
       setIsLoading(false);
       setIsRefreshing(false);
     }
+  }, [discoverTabs]);
+
+  // Initial load: discover tabs and fetch first tab
+  useEffect(() => {
+    (async () => {
+      const freshTabs = await discoverTabs();
+      const initialTab = freshTabs.find(t => t.name === activeTabName) || freshTabs[0];
+      if (initialTab) {
+        fetchTabData(initialTab, false);
+      }
+    })();
   }, []);
 
-  // Fetch when active tab changes
-  useEffect(() => {
-    fetchCsvData(currentCsvUrl, false);
+  // When tab selection changes
+  const handleTabChange = (name: string) => {
+    setActiveTabName(name);
     setCurrentPage(1);
     setColumnFilters({});
-  }, [currentCsvUrl, fetchCsvData]);
+    const target = tabs.find(t => t.name === name);
+    if (target) {
+      fetchTabData(target, false);
+    }
+  };
 
-  // Real-time automatic polling timer (every 25 seconds)
+  // Background Auto-Sync (Every 20 seconds, re-validates latest data and GIDs)
   useEffect(() => {
     if (!isAutoRefreshEnabled) return;
 
-    const intervalId = setInterval(() => {
-      fetchCsvData(currentCsvUrl, true);
-    }, 25000);
+    const intervalId = setInterval(async () => {
+      // Re-fetch current tab
+      if (currentTab) {
+        fetchTabData(currentTab, true);
+      }
+    }, 20000);
 
     return () => clearInterval(intervalId);
-  }, [isAutoRefreshEnabled, currentCsvUrl, fetchCsvData]);
+  }, [isAutoRefreshEnabled, currentTab, fetchTabData]);
 
   // All detected columns in the current data
   const allColumns = useMemo(() => {
@@ -220,7 +291,13 @@ export default function App() {
 
   const isStatusColumn = (colName: string) => {
     const lower = colName.toLowerCase();
-    return lower.includes('update') || lower.includes('fabric') || lower.includes('sewing') || lower.includes('finishing') || lower.includes('accessories');
+    return (
+      lower.includes('update') || 
+      lower.includes('fabric') || 
+      lower.includes('sewing') || 
+      lower.includes('finishing') || 
+      lower.includes('accessories')
+    );
   };
 
   const getStatusPill = (val: string) => {
@@ -258,14 +335,14 @@ export default function App() {
         <div className="flex flex-wrap items-center justify-center gap-3 mt-3 text-xs text-slate-500">
           <div className="flex items-center gap-1.5 font-medium">
             <Radio size={14} className={isAutoRefreshEnabled ? 'text-emerald-500 animate-pulse' : 'text-slate-400'} />
-            <span>Live Auto-Sync:</span>
+            <span>Auto-Sync:</span>
             <button
               onClick={() => setIsAutoRefreshEnabled(!isAutoRefreshEnabled)}
               className={`font-bold px-2 py-0.5 rounded cursor-pointer transition ${
                 isAutoRefreshEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
               }`}
             >
-              {isAutoRefreshEnabled ? 'ON (25s)' : 'PAUSED'}
+              {isAutoRefreshEnabled ? 'ACTIVE (20s)' : 'PAUSED'}
             </button>
           </div>
 
@@ -274,36 +351,40 @@ export default function App() {
           <div>
             Last sync:{' '}
             <span className="font-semibold text-slate-700">
-              {lastUpdated ? lastUpdated.toLocaleTimeString() : 'Syncing...'}
+              {lastUpdated ? lastUpdated.toLocaleTimeString() : 'Connecting...'}
             </span>
           </div>
 
           <span className="text-slate-300">•</span>
 
           <button
-            onClick={() => fetchCsvData(currentCsvUrl, false)}
+            onClick={() => {
+              discoverTabs().then(freshTabs => {
+                const target = freshTabs.find(t => t.name === activeTabName) || freshTabs[0];
+                if (target) fetchTabData(target, false);
+              });
+            }}
             disabled={isRefreshing}
             className="flex items-center gap-1 font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-md transition cursor-pointer disabled:opacity-50"
           >
             <RefreshCw size={12} className={isRefreshing ? 'animate-spin' : ''} />
-            <span>{isRefreshing ? 'Updating...' : 'Refresh Now'}</span>
+            <span>{isRefreshing ? 'Syncing...' : 'Refresh Now'}</span>
           </button>
         </div>
       </div>
 
-      {/* Sync Error Notice if Google Sheet has temporary glitch */}
-      {syncError && (
-        <div className="max-w-4xl mx-auto mb-6 p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 flex items-start gap-3 shadow-sm">
-          <AlertTriangle className="text-amber-600 shrink-0 mt-0.5" size={18} />
-          <div className="flex-1 text-xs">
-            <p className="font-bold text-sm text-amber-900 mb-1">Live Sync Notice</p>
-            <p className="text-amber-800">{syncError}</p>
+      {/* Sync Notice Banner if any */}
+      {syncNotice && (
+        <div className="max-w-4xl mx-auto mb-6 p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 flex items-center justify-between gap-3 shadow-xs">
+          <div className="flex items-center gap-2 text-xs">
+            <AlertTriangle className="text-amber-600 shrink-0" size={16} />
+            <span>{syncNotice}</span>
           </div>
           <button
-            onClick={() => fetchCsvData(currentCsvUrl, false)}
-            className="px-3 py-1 bg-amber-200 hover:bg-amber-300 text-amber-900 rounded-lg text-xs font-bold transition cursor-pointer"
+            onClick={() => fetchTabData(currentTab, false)}
+            className="px-2.5 py-1 bg-amber-200 hover:bg-amber-300 text-amber-900 rounded text-xs font-bold transition cursor-pointer"
           >
-            Retry Now
+            Retry
           </button>
         </div>
       )}
@@ -346,8 +427,10 @@ export default function App() {
 
         <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
           <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Active Buyer Tab</p>
-            <p className="text-lg font-bold text-emerald-700 mt-1 truncate max-w-[140px]">{activeTab}</p>
+            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Active Tab</p>
+            <p className="text-base font-bold text-emerald-700 mt-1 truncate max-w-[150px]" title={activeTabName}>
+              {activeTabName}
+            </p>
           </div>
           <div className="h-12 w-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-lg border border-emerald-100">
             🏷️
@@ -355,17 +438,17 @@ export default function App() {
         </div>
       </div>
 
-      {/* Buyer Tabs */}
+      {/* Buyer Tabs (Dynamically Discovered & Updated) */}
       <div className="flex items-center space-x-2 overflow-x-auto pb-2 mb-6 scrollbar-none">
-        {TABS.map(tab => (
+        {tabs.map(tab => (
           <button
             key={tab.name}
-            className={`px-5 py-2.5 rounded-xl font-bold text-sm transition-all whitespace-nowrap cursor-pointer ${
-              activeTab === tab.name
+            className={`px-4.5 py-2.5 rounded-xl font-bold text-sm transition-all whitespace-nowrap cursor-pointer ${
+              activeTabName === tab.name
                 ? 'bg-blue-600 text-white shadow-md shadow-blue-500/25 ring-2 ring-blue-600 ring-offset-2'
                 : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100 hover:text-slate-900 shadow-xs'
             }`}
-            onClick={() => setActiveTab(tab.name)}
+            onClick={() => handleTabChange(tab.name)}
           >
             {tab.name}
           </button>
@@ -507,7 +590,7 @@ export default function App() {
         </div>
       )}
 
-      {/* Table Container with FULL CELL BORDERS */}
+      {/* Table Container with FULL COMPLETE CELL BORDERS */}
       <div className="bg-white rounded-2xl shadow-sm border border-slate-300 overflow-hidden">
         <div className="overflow-x-auto">
           {isLoading ? (
