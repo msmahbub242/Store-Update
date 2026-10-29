@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import Papa from 'papaparse';
 import { 
   Search, 
@@ -10,16 +10,23 @@ import {
   Eye,
   EyeOff,
   Filter,
-  X
+  X,
+  RefreshCw,
+  Radio,
+  AlertTriangle
 } from 'lucide-react';
 
+const SHEET_BASE = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q/pub';
+
+// Verified active tab GIDs from your published Google Sheet
 const TABS = [
-  { name: 'LCW Tarek', link: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q/pub?gid=657204573&single=true&output=csv' },
-  { name: 'LCW Rausan', link: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q/pub?gid=2147335208&single=true&output=csv' },
-  { name: 'BR Fahim', link: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q/pub?gid=2037206968&single=true&output=csv' },
-  { name: 'Monoprix', link: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q/pub?gid=1171317696&single=true&output=csv' },
-  { name: 'Tesco', link: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q/pub?gid=881919278&single=true&output=csv' },
-  { name: 'Ovs', link: 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q/pub?gid=2005771256&single=true&output=csv' },
+  { name: 'LC WAIKIKI (Tariq sir)', gid: '458017748' },
+  { name: 'BR sujoy', gid: '1918978384' },
+  { name: 'BR Fahim', gid: '1956719815' },
+  { name: 'Monoprix', gid: '494748923' }, // fallback or mapped
+  { name: 'TESCO', gid: '1026758247' },
+  { name: 'OVS', gid: '1243619856' },
+  { name: 'Madam', gid: '778006127' },
 ];
 
 export default function App() {
@@ -32,50 +39,113 @@ export default function App() {
   const [showHeaderFilterRow, setShowHeaderFilterRow] = useState(false);
   const [currentPage, setCurrentPage] = useState(1);
   const [isLoading, setIsLoading] = useState(false);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isAutoRefreshEnabled, setIsAutoRefreshEnabled] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const rowsPerPage = 12;
 
-  const fetchCsvData = async (link: string) => {
-    setIsLoading(true);
+  const currentTabObj = useMemo(() => {
+    return TABS.find(t => t.name === activeTab) || TABS[0];
+  }, [activeTab]);
+
+  // Construct standard valid Google Sheets CSV URL without non-standard params
+  const currentCsvUrl = useMemo(() => {
+    return `${SHEET_BASE}?gid=${currentTabObj.gid}&single=true&output=csv`;
+  }, [currentTabObj]);
+
+  const fetchCsvData = useCallback(async (csvUrl: string, isSilent = false) => {
+    if (!isSilent) setIsLoading(true);
+    setIsRefreshing(true);
+
     try {
-      const response = await fetch(link);
+      // Standard CORS fetch without custom headers to avoid CORS preflight rejection by Google
+      const response = await fetch(csvUrl);
+
+      if (!response.ok) {
+        throw new Error(`Google Sheets responded with HTTP status ${response.status}`);
+      }
+
       const csvText = await response.text();
+      const trimmedText = csvText.trim();
+
+      // Check if Google returned an HTML error page (e.g. invalid permissions or publishing delay)
+      if (trimmedText.startsWith('<!DOCTYPE html') || trimmedText.startsWith('<html')) {
+        throw new Error('Google Sheet returned a temporary HTML page instead of CSV data. Google may still be syncing changes.');
+      }
+
       Papa.parse(csvText, {
         header: true,
-        skipEmptyLines: true,
+        skipEmptyLines: 'greedy',
         complete: (results) => {
-          // Clean data: eliminate trailing metadata columns like _1, _2
+          if (!results.data || !Array.isArray(results.data) || results.data.length === 0) {
+            setSyncError('Received empty data from Google Sheet.');
+            return;
+          }
+
+          // Clean data: remove blank keys and metadata like _1, _2
           const cleanedData = (results.data as any[]).map(row => {
+            if (!row || typeof row !== 'object') return {};
             const newRow: any = {};
             Object.keys(row).forEach(key => {
               const trimmedKey = key.trim();
-              if (trimmedKey && !trimmedKey.endsWith('_1') && !trimmedKey.endsWith('_2')) {
-                newRow[trimmedKey] = typeof row[key] === 'string' ? row[key].trim() : row[key];
+              if (trimmedKey && !trimmedKey.endsWith('_1') && !trimmedKey.endsWith('_2') && !trimmedKey.startsWith('__parsed_extra')) {
+                const cellVal = row[key];
+                newRow[trimmedKey] = typeof cellVal === 'string' ? cellVal.trim() : cellVal;
               }
             });
             return newRow;
-          }).filter(row => Object.values(row).some(v => v !== undefined && v !== ''));
-          setRawData(cleanedData);
+          }).filter(row => Object.values(row).some(v => v !== undefined && v !== null && v !== ''));
+
+          if (cleanedData.length > 0) {
+            setRawData(cleanedData);
+            setSyncError(null);
+            setLastUpdated(new Date());
+          }
+        },
+        error: (err) => {
+          console.error('CSV Parsing error:', err);
+          setSyncError(`Parsing error: ${err.message}`);
         }
       });
-    } catch (err) {
+    } catch (err: any) {
       console.error('Error fetching CSV:', err);
+      setSyncError(err.message || 'Unable to fetch updated data from Google Sheet.');
     } finally {
       setIsLoading(false);
+      setIsRefreshing(false);
     }
-  };
+  }, []);
 
+  // Fetch when active tab changes
   useEffect(() => {
-    const tab = TABS.find(t => t.name === activeTab);
-    if (tab) fetchCsvData(tab.link);
+    fetchCsvData(currentCsvUrl, false);
     setCurrentPage(1);
     setColumnFilters({});
-  }, [activeTab]);
+  }, [currentCsvUrl, fetchCsvData]);
+
+  // Real-time automatic polling timer (every 25 seconds)
+  useEffect(() => {
+    if (!isAutoRefreshEnabled) return;
+
+    const intervalId = setInterval(() => {
+      fetchCsvData(currentCsvUrl, true);
+    }, 25000);
+
+    return () => clearInterval(intervalId);
+  }, [isAutoRefreshEnabled, currentCsvUrl, fetchCsvData]);
 
   // All detected columns in the current data
   const allColumns = useMemo(() => {
     if (rawData.length === 0) return [];
     const keys = new Set<string>();
-    rawData.forEach(row => Object.keys(row).forEach(k => keys.add(k)));
+    rawData.forEach(row => {
+      if (row && typeof row === 'object') {
+        Object.keys(row).forEach(k => {
+          if (k) keys.add(k);
+        });
+      }
+    });
     return Array.from(keys);
   }, [rawData]);
 
@@ -95,9 +165,8 @@ export default function App() {
   const showAllColumns = () => setHiddenColumns([]);
   
   const hideAllColumns = () => {
-    // Keep at least the first column visible
-    if (allColumns.length > 0) {
-      setHiddenColumns(allColumns.slice(1));
+    if (allColumns.length > 3) {
+      setHiddenColumns(allColumns.slice(4));
     }
   };
 
@@ -109,6 +178,8 @@ export default function App() {
   // Filtered dataset combining global filter and header column filters
   const filteredData = useMemo(() => {
     return rawData.filter(row => {
+      if (!row) return false;
+
       // Global Search
       if (globalFilter.trim()) {
         const query = globalFilter.toLowerCase();
@@ -131,11 +202,11 @@ export default function App() {
     });
   }, [rawData, globalFilter, columnFilters]);
 
-  // Total DZN calculation
+  // Total DZN calculation (checks DZN or DZN QTY in various tabs)
   const totalDzn = useMemo(() => {
     return filteredData.reduce((acc, row) => {
-      // Find DZN key in case of case variation (DZN, Dzn, dzn)
-      const dznKey = Object.keys(row).find(k => k.toLowerCase() === 'dzn');
+      if (!row) return acc;
+      const dznKey = Object.keys(row).find(k => k.toLowerCase().includes('dzn'));
       const val = dznKey ? parseFloat(String(row[dznKey]).replace(/,/g, '')) : NaN;
       return acc + (isNaN(val) ? 0 : val);
     }, 0);
@@ -147,15 +218,20 @@ export default function App() {
   const indexOfFirstRow = indexOfLastRow - rowsPerPage;
   const currentRows = filteredData.slice(indexOfFirstRow, indexOfLastRow);
 
+  const isStatusColumn = (colName: string) => {
+    const lower = colName.toLowerCase();
+    return lower.includes('update') || lower.includes('fabric') || lower.includes('sewing') || lower.includes('finishing') || lower.includes('accessories');
+  };
+
   const getStatusPill = (val: string) => {
     const text = (val ?? '').toString().trim();
     if (!text) {
-      return <span className="text-gray-400 italic text-xs">-</span>;
+      return <span className="text-slate-400 italic text-xs">-</span>;
     }
     const isOk = text.toLowerCase() === 'ok';
     return (
       <span 
-        className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold border shadow-xs tracking-wide ${
+        className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold border shadow-2xs tracking-wide ${
           isOk 
             ? 'bg-emerald-100 text-emerald-800 border-emerald-300' 
             : 'bg-rose-100 text-rose-800 border-rose-300'
@@ -167,22 +243,70 @@ export default function App() {
     );
   };
 
-  const isStatusColumn = (colName: string) => {
-    const lower = colName.toLowerCase();
-    return lower.includes('update') || lower.includes('fabric') || lower.includes('sewing') || lower.includes('finishing');
-  };
-
   return (
     <div className="p-4 md:p-8 bg-slate-50 min-h-screen text-slate-800 font-sans">
       {/* Top Header */}
-      <div className="flex justify-center mb-8">
+      <div className="flex flex-col items-center justify-center mb-6">
         <div className="bg-gradient-to-r from-blue-700 via-indigo-600 to-blue-600 text-white px-8 py-3.5 rounded-full shadow-lg border border-blue-400/30 flex items-center space-x-3">
           <span className="h-3 w-3 rounded-full bg-emerald-400 animate-pulse"></span>
           <h1 className="text-xl md:text-2xl font-extrabold tracking-wide drop-shadow-sm">
             Felix Store - Materials Status
           </h1>
         </div>
+
+        {/* Live sync status banner */}
+        <div className="flex flex-wrap items-center justify-center gap-3 mt-3 text-xs text-slate-500">
+          <div className="flex items-center gap-1.5 font-medium">
+            <Radio size={14} className={isAutoRefreshEnabled ? 'text-emerald-500 animate-pulse' : 'text-slate-400'} />
+            <span>Live Auto-Sync:</span>
+            <button
+              onClick={() => setIsAutoRefreshEnabled(!isAutoRefreshEnabled)}
+              className={`font-bold px-2 py-0.5 rounded cursor-pointer transition ${
+                isAutoRefreshEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
+              }`}
+            >
+              {isAutoRefreshEnabled ? 'ON (25s)' : 'PAUSED'}
+            </button>
+          </div>
+
+          <span className="text-slate-300">•</span>
+
+          <div>
+            Last sync:{' '}
+            <span className="font-semibold text-slate-700">
+              {lastUpdated ? lastUpdated.toLocaleTimeString() : 'Syncing...'}
+            </span>
+          </div>
+
+          <span className="text-slate-300">•</span>
+
+          <button
+            onClick={() => fetchCsvData(currentCsvUrl, false)}
+            disabled={isRefreshing}
+            className="flex items-center gap-1 font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-md transition cursor-pointer disabled:opacity-50"
+          >
+            <RefreshCw size={12} className={isRefreshing ? 'animate-spin' : ''} />
+            <span>{isRefreshing ? 'Updating...' : 'Refresh Now'}</span>
+          </button>
+        </div>
       </div>
+
+      {/* Sync Error Notice if Google Sheet has temporary glitch */}
+      {syncError && (
+        <div className="max-w-4xl mx-auto mb-6 p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 flex items-start gap-3 shadow-sm">
+          <AlertTriangle className="text-amber-600 shrink-0 mt-0.5" size={18} />
+          <div className="flex-1 text-xs">
+            <p className="font-bold text-sm text-amber-900 mb-1">Live Sync Notice</p>
+            <p className="text-amber-800">{syncError}</p>
+          </div>
+          <button
+            onClick={() => fetchCsvData(currentCsvUrl, false)}
+            className="px-3 py-1 bg-amber-200 hover:bg-amber-300 text-amber-900 rounded-lg text-xs font-bold transition cursor-pointer"
+          >
+            Retry Now
+          </button>
+        </div>
+      )}
       
       {/* Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
@@ -255,7 +379,7 @@ export default function App() {
           <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
           <input
             className="w-full pl-10 pr-10 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
-            placeholder="Search by Buyer, PO, Style, Item or Remark..."
+            placeholder="Search by Buyer, PO, Style, Item, Remark, etc..."
             value={globalFilter}
             onChange={(e) => {
               setGlobalFilter(e.target.value);
@@ -315,7 +439,7 @@ export default function App() {
 
       {/* Column Visibility Panel (Expandable) */}
       {isColumnPanelOpen && (
-        <div className="bg-white p-5 rounded-2xl shadow-sm border border-blue-200 mb-6 transition-all animate-fadeIn">
+        <div className="bg-white p-5 rounded-2xl shadow-sm border border-blue-200 mb-6 transition-all">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-200 gap-2 mb-4">
             <div>
               <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
@@ -389,7 +513,7 @@ export default function App() {
           {isLoading ? (
             <div className="py-20 text-center text-slate-500">
               <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent mb-3"></div>
-              <p className="font-semibold text-sm">Loading data from Google Sheet...</p>
+              <p className="font-semibold text-sm">Loading latest data from Google Sheet...</p>
             </div>
           ) : visibleColumns.length === 0 ? (
             <div className="py-16 text-center text-slate-500">
