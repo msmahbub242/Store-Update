@@ -1,0 +1,6 @@
+{
+  "name": "SheetDash",
+  "description": "A real-time Google Sheets data dashboard with interactive visualizations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
