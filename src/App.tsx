@@ -17,6 +17,7 @@ import {
   Layers,
   Sparkles
 } from 'lucide-react';
+import { Analytics } from '@vercel/analytics/react';
 
 const PUB_BASE = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q';
 const PUBHTML_URL = `${PUB_BASE}/pubhtml`;
@@ -903,7 +904,7 @@ export default function App() {
           </span>
         </div>
       </footer>
+      <Analytics />
     </div>
   );
 }
-
