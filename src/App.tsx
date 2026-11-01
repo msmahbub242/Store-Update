@@ -27,7 +27,12 @@ import {
   Table as TableIcon,
   ArrowUpDown,
   Calendar,
-  Package
+  Package,
+  Lock,
+  Unlock,
+  ShieldCheck,
+  KeyRound,
+  LogOut
 } from 'lucide-react';
 
 const PUB_BASE = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q';
@@ -133,6 +138,20 @@ export default function App() {
   const [lineModalBuyerFilter, setLineModalBuyerFilter] = useState('ALL');
   const [lineViewMode, setLineViewMode] = useState<'cards' | 'table'>('cards');
   const [selectedLineFilter, setSelectedLineFilter] = useState<string>('ALL');
+
+  // Authorization state for Line Allocation management (Protected on public URL)
+  const [isAuthorized, setIsAuthorized] = useState<boolean>(() => {
+    try {
+      return sessionStorage.getItem('felix_line_auth') === 'true';
+    } catch {
+      return false;
+    }
+  });
+  const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
+  const [authUsername, setAuthUsername] = useState<string>('');
+  const [authPassword, setAuthPassword] = useState<string>('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [pendingLineToManage, setPendingLineToManage] = useState<string | null>(null);
 
   // Persist lineAllocations whenever they change
   useEffect(() => {
@@ -300,38 +319,57 @@ export default function App() {
     return map;
   }, [allMasterOrders]);
 
-  // Auto-distribute upcoming POs into 15 lines if lines are currently empty
-  const autoDistributePOsToLines = useCallback(() => {
-    if (allMasterOrders.length === 0) return;
+  // Authorization handler: checks username & password credentials
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError(null);
+    const u = authUsername.trim().toLowerCase();
+    const p = authPassword.trim();
 
-    // Filter valid POs with a PO number
-    const available = allMasterOrders.filter(o => o['PO'] && String(o['PO']).trim() !== '');
-    
-    const newAllocations: Record<string, string[]> = {};
-    let currentIndex = 0;
-
-    ALL_LINE_NAMES.forEach(lineName => {
-      newAllocations[lineName] = [];
-      // Assign up to 5 POs per line
-      for (let slot = 0; slot < 5 && currentIndex < available.length; slot++) {
-        newAllocations[lineName].push(available[currentIndex]._uniqueKey);
-        currentIndex++;
+    // Standard factory planning / store department authorized credentials:
+    // Username: planner, store, admin, mahbub
+    // Password: felix123
+    const allowedUsers = ['planner', 'store', 'admin', 'mahbub'];
+    if (allowedUsers.includes(u) && (p === 'felix123' || p === 'Felix123' || p === 'felix' || p === 'store123')) {
+      setIsAuthorized(true);
+      try {
+        sessionStorage.setItem('felix_line_auth', 'true');
+      } catch (err) {
+        console.warn('Could not save auth session', err);
       }
-    });
-
-    setLineAllocations(newAllocations);
-  }, [allMasterOrders]);
-
-  // If user visits Line view and no lines have assignments yet, auto-fill once so it's ready immediately
-  useEffect(() => {
-    const hasAnyAllocations = Object.values(lineAllocations).some(arr => arr && arr.length > 0);
-    if (!hasAnyAllocations && allMasterOrders.length > 0) {
-      autoDistributePOsToLines();
+      setShowAuthModal(false);
+      setAuthUsername('');
+      setAuthPassword('');
+      if (pendingLineToManage) {
+        setEditingLine(pendingLineToManage);
+        setPendingLineToManage(null);
+      }
+    } else {
+      setAuthError('Invalid username or password. Authorized store/planner access only.');
     }
-  }, [allMasterOrders, lineAllocations, autoDistributePOsToLines]);
+  };
 
-  // Line allocation modifiers
+  const handleLogout = () => {
+    setIsAuthorized(false);
+    try {
+      sessionStorage.removeItem('felix_line_auth');
+    } catch (err) {
+      console.warn('Could not remove auth session', err);
+    }
+  };
+
+  // Helper to ensure action is authorized before proceeding
+  const requireAuthorization = (targetLine?: string): boolean => {
+    if (isAuthorized) return true;
+    setPendingLineToManage(targetLine || null);
+    setAuthError(null);
+    setShowAuthModal(true);
+    return false;
+  };
+
+  // Line allocation modifiers (Guarded by authorization)
   const addPoToLine = (lineName: string, orderKey: string) => {
+    if (!requireAuthorization(lineName)) return;
     setLineAllocations(prev => {
       const current = prev[lineName] || [];
       if (current.includes(orderKey)) return prev;
@@ -347,6 +385,7 @@ export default function App() {
   };
 
   const removePoFromLine = (lineName: string, orderKey: string) => {
+    if (!requireAuthorization(lineName)) return;
     setLineAllocations(prev => ({
       ...prev,
       [lineName]: (prev[lineName] || []).filter(k => k !== orderKey)
@@ -354,6 +393,7 @@ export default function App() {
   };
 
   const movePoInLine = (lineName: string, index: number, direction: 'up' | 'down') => {
+    if (!requireAuthorization(lineName)) return;
     setLineAllocations(prev => {
       const list = [...(prev[lineName] || [])];
       const targetIndex = direction === 'up' ? index - 1 : index + 1;
@@ -363,14 +403,6 @@ export default function App() {
       list[targetIndex] = temp;
       return { ...prev, [lineName]: list };
     });
-  };
-
-  const clearAllLines = () => {
-    if (window.confirm('Are you sure you want to reset all 15 line allocations?')) {
-      const empty: Record<string, string[]> = {};
-      ALL_LINE_NAMES.forEach(l => { empty[l] = []; });
-      setLineAllocations(empty);
-    }
   };
 
   // Determine if Universal Search mode is active
@@ -807,25 +839,32 @@ export default function App() {
           <div className="flex items-center gap-2">
             {activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
               <>
-                {/* Auto-distribute Button */}
-                <button
-                  onClick={autoDistributePOsToLines}
-                  className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition cursor-pointer"
-                  title="Auto-fill lines with earliest upcoming POs"
-                >
-                  <ArrowUpDown size={14} />
-                  <span>Auto-Fill POs</span>
-                </button>
-
-                {/* Clear allocations */}
-                <button
-                  onClick={clearAllLines}
-                  className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-semibold bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 transition cursor-pointer"
-                  title="Reset all lines"
-                >
-                  <Trash2 size={14} />
-                  <span className="hidden sm:inline">Reset</span>
-                </button>
+                {/* Authorization Status / Login Button */}
+                {isAuthorized ? (
+                  <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-300">
+                    <ShieldCheck size={14} className="text-emerald-600 shrink-0" />
+                    <span>Planner Mode</span>
+                    <button
+                      onClick={handleLogout}
+                      className="ml-1 text-[11px] text-slate-500 hover:text-rose-700 underline font-medium cursor-pointer"
+                      title="Lock & exit planner session"
+                    >
+                      Lock
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => {
+                      setPendingLineToManage(null);
+                      setShowAuthModal(true);
+                    }}
+                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-amber-50 text-amber-900 hover:bg-amber-100 border border-amber-300 transition cursor-pointer shadow-2xs"
+                    title="Log in to allocate or manage POs"
+                  >
+                    <Lock size={13} className="text-amber-600" />
+                    <span>Planner Login</span>
+                  </button>
+                )}
 
                 {/* View Mode Toggle */}
                 <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
@@ -1068,14 +1107,15 @@ export default function App() {
                       {/* Manage / Assign POs Button */}
                       <button
                         onClick={() => {
+                          if (!requireAuthorization(lineName)) return;
                           setEditingLine(lineName);
                           setLineModalSearch('');
                           setLineModalBuyerFilter('ALL');
                         }}
-                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition flex items-center gap-1 shadow-2xs cursor-pointer"
+                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition flex items-center gap-1.5 shadow-2xs cursor-pointer"
                         title={`Assign or manage 5 POs for ${lineName}`}
                       >
-                        <Plus size={13} />
+                        {isAuthorized ? <Plus size={13} /> : <Lock size={13} />}
                         <span>Manage POs</span>
                       </button>
                     </div>
@@ -1089,8 +1129,8 @@ export default function App() {
                       </span>
                     </div>
 
-                    {/* 5 PO Slots Queue */}
-                    <div className="p-4 flex-1 flex flex-col gap-3">
+                    {/* 5 PO Slots Queue with crisp OUTLINE Styling */}
+                    <div className="p-4 flex-1 flex flex-col gap-3.5 bg-slate-50/40">
                       {Array.from({ length: 5 }).map((_, slotIndex) => {
                         const order = orders[slotIndex];
                         const slotNum = slotIndex + 1;
@@ -1101,16 +1141,24 @@ export default function App() {
                             <div 
                               key={slotIndex} 
                               onClick={() => {
+                                if (!requireAuthorization(lineName)) return;
                                 setEditingLine(lineName);
                                 setLineModalSearch('');
                                 setLineModalBuyerFilter('ALL');
                               }}
-                              className="border-2 border-dashed border-slate-200 rounded-xl p-3 text-center text-slate-400 hover:border-amber-300 hover:bg-amber-50/30 transition cursor-pointer flex items-center justify-center gap-2 min-h-[70px]"
+                              className="border-2 border-dashed border-slate-300 rounded-2xl p-3 text-center text-slate-400 hover:border-amber-400 hover:text-amber-800 hover:bg-amber-50/20 transition cursor-pointer flex flex-col items-center justify-center gap-1.5 min-h-[90px]"
                             >
-                              <span className="h-5 w-5 rounded-full bg-slate-100 text-slate-500 font-bold text-xs flex items-center justify-center">
-                                #{slotNum}
-                              </span>
-                              <span className="text-xs font-medium">Empty Slot {slotNum} — Click to assign PO</span>
+                              <div className="flex items-center gap-2">
+                                <span className="h-6 w-6 rounded-md border border-slate-300 bg-slate-100 text-slate-600 font-black font-mono text-xs flex items-center justify-center">
+                                  #{slotNum}
+                                </span>
+                                <span className="text-xs font-bold text-slate-600">
+                                  Empty Slot {slotNum}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-400">
+                                {isAuthorized ? '+ Click to assign upcoming PO' : '🔒 Authorization required to allocate'}
+                              </p>
                             </div>
                           );
                         }
@@ -1120,21 +1168,23 @@ export default function App() {
                         return (
                           <div 
                             key={order._uniqueKey || slotIndex} 
-                            className={`rounded-xl border p-3 transition-all relative ${
+                            className={`rounded-2xl border-2 transition-all p-3.5 bg-white shadow-2xs ${
                               isRunning 
-                                ? 'bg-amber-50/50 border-amber-300 ring-1 ring-amber-400/40' 
-                                : 'bg-white border-slate-200 hover:border-slate-300 shadow-2xs'
+                                ? 'border-amber-500 ring-2 ring-amber-400/20' 
+                                : 'border-slate-300 hover:border-slate-400'
                             }`}
                           >
-                            {/* Top row: Queue Badge + Buyer + Running indicator */}
-                            <div className="flex items-center justify-between gap-2 mb-2">
-                              <div className="flex items-center gap-1.5">
-                                <span className={`text-[11px] font-extrabold px-2 py-0.5 rounded-md ${
-                                  isRunning ? 'bg-amber-600 text-white' : 'bg-slate-200 text-slate-800'
+                            {/* Top row: Queue Badge + Buyer + Running indicator + Action Buttons */}
+                            <div className="flex items-center justify-between gap-2 pb-2 mb-2.5 border-b border-slate-200">
+                              <div className="flex items-center gap-1.5 flex-wrap">
+                                <span className={`text-[11px] font-black font-mono px-2 py-0.5 rounded border ${
+                                  isRunning 
+                                    ? 'bg-amber-500 text-white border-amber-600 shadow-2xs' 
+                                    : 'bg-slate-100 text-slate-800 border-slate-300'
                                 }`}>
                                   #{slotNum} {isRunning && '• NEXT / RUNNING'}
                                 </span>
-                                <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-blue-100 text-blue-800">
+                                <span className="text-[11px] font-bold px-2 py-0.5 rounded border border-blue-300 bg-blue-50 text-blue-900">
                                   {order._tabSource || 'Buyer'}
                                 </span>
                               </div>
@@ -1143,86 +1193,125 @@ export default function App() {
                                 {slotIndex > 0 && (
                                   <button
                                     onClick={() => movePoInLine(lineName, slotIndex, 'up')}
-                                    className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                                    className="p-1 rounded border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-100 cursor-pointer"
                                     title="Move Up in queue"
                                   >
-                                    <ArrowUp size={13} />
+                                    <ArrowUp size={12} />
                                   </button>
                                 )}
                                 {slotIndex < orders.length - 1 && (
                                   <button
                                     onClick={() => movePoInLine(lineName, slotIndex, 'down')}
-                                    className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                                    className="p-1 rounded border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-100 cursor-pointer"
                                     title="Move Down in queue"
                                   >
-                                    <ArrowDown size={13} />
+                                    <ArrowDown size={12} />
                                   </button>
                                 )}
                                 <button
                                   onClick={() => removePoFromLine(lineName, order._uniqueKey)}
-                                  className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
+                                  className="p-1 rounded border border-rose-200 text-rose-500 hover:text-rose-700 hover:bg-rose-50 cursor-pointer"
                                   title="Remove from line"
                                 >
-                                  <X size={13} />
+                                  <X size={12} />
                                 </button>
                               </div>
                             </div>
 
-                            {/* Order Details: PO, Style, Item, DZN, Ship Date */}
-                            <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-xs mb-2.5">
-                              <div>
-                                <span className="text-slate-400 text-[10px] uppercase font-bold block">PO Number:</span>
-                                <span className="font-extrabold text-slate-900 text-sm tracking-wide">{order['PO'] || '-'}</span>
+                            {/* PO Data Outline Grid */}
+                            <div className="border border-slate-300 rounded-xl overflow-hidden mb-2.5 text-xs">
+                              {/* Row 1: PO & Style */}
+                              <div className="grid grid-cols-2 divide-x divide-slate-300 border-b border-slate-300 bg-slate-50/70">
+                                <div className="p-2">
+                                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block">PO Number</span>
+                                  <span className="font-black text-slate-900 text-sm tracking-wide block truncate">
+                                    {order['PO'] || '-'}
+                                  </span>
+                                </div>
+                                <div className="p-2">
+                                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block">Style</span>
+                                  <span className="font-bold text-slate-800 text-xs block truncate" title={order['STYLE']}>
+                                    {order['STYLE'] || '-'}
+                                  </span>
+                                </div>
                               </div>
-                              <div>
-                                <span className="text-slate-400 text-[10px] uppercase font-bold block">Style:</span>
-                                <span className="font-bold text-slate-800 truncate block" title={order['STYLE']}>{order['STYLE'] || '-'}</span>
-                              </div>
-                              <div>
-                                <span className="text-slate-400 text-[10px] uppercase font-bold block">Item & File:</span>
-                                <span className="text-slate-700 truncate block" title={`${order['ITEM']} (${order['File No']})`}>
-                                  {order['ITEM'] || '-'} {order['File No'] && `(${order['File No']})`}
+
+                              {/* Row 2: Item & File */}
+                              <div className="p-2 border-b border-slate-300 bg-white">
+                                <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block">Item & File No</span>
+                                <span className="text-slate-800 font-semibold text-xs block truncate" title={`${order['ITEM'] || '-'} (${order['File No'] || '-'})`}>
+                                  {order['ITEM'] || '-'} {order['File No'] && <span className="text-slate-500 font-normal">({order['File No']})</span>}
                                 </span>
                               </div>
-                              <div>
-                                <span className="text-slate-400 text-[10px] uppercase font-bold block">DZN & Ship Date:</span>
-                                <span className="font-bold text-indigo-700">
-                                  {order['DZN'] || '-'} Dzn • {order['SHIP DATE'] || '-'}
-                                </span>
+
+                              {/* Row 3: DZN & Ship Date */}
+                              <div className="grid grid-cols-2 divide-x divide-slate-300 bg-slate-50/40">
+                                <div className="p-2">
+                                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block">DZN Qty</span>
+                                  <span className="font-extrabold text-indigo-700 text-xs block">
+                                    {order['DZN'] || '-'} Dzn
+                                  </span>
+                                </div>
+                                <div className="p-2">
+                                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block">Ship Date</span>
+                                  <span className="font-bold text-slate-700 text-xs block">
+                                    {order['SHIP DATE'] || '-'}
+                                  </span>
+                                </div>
                               </div>
                             </div>
 
-                            {/* Material Status Badges: Fabric, Sewing Acc, Finishing Acc */}
-                            <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-1.5 text-[11px]">
-                              <span className="text-slate-400 text-[10px] font-bold">Materials:</span>
-                              
-                              <span className={`px-2 py-0.5 rounded font-bold border ${
-                                readiness.fabricOk ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-rose-50 text-rose-800 border-rose-300'
-                              }`} title={`Fabric: ${order['Fabric Update'] || '-'}`}>
-                                Fab: {order['Fabric Update'] || 'Pending'}
-                              </span>
+                            {/* Material Status Badges in Outline Style */}
+                            <div className="pt-2 border-t border-slate-200">
+                              <div className="flex items-center justify-between mb-1.5">
+                                <span className="text-slate-500 text-[10px] font-extrabold uppercase tracking-wider">Materials Status</span>
+                                {readiness.isReady ? (
+                                  <span className="text-[10px] font-black border border-emerald-600 bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded-full flex items-center gap-1">
+                                    <CheckCircle2 size={11} className="text-emerald-600" />
+                                    READY
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-black border border-amber-500 bg-amber-50 text-amber-800 px-2 py-0.5 rounded-full flex items-center gap-1">
+                                    <AlertCircle size={11} className="text-amber-600" />
+                                    PENDING
+                                  </span>
+                                )}
+                              </div>
 
-                              <span className={`px-2 py-0.5 rounded font-bold border ${
-                                readiness.sewingOk ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-rose-50 text-rose-800 border-rose-300'
-                              }`} title={`Sewing Acc: ${order['Sewing Acc. Update'] || '-'}`}>
-                                Sew: {order['Sewing Acc. Update'] || 'Pending'}
-                              </span>
+                              <div className="grid grid-cols-3 gap-1.5 text-[11px]">
+                                <div className={`p-1.5 rounded-lg border text-center ${
+                                  readiness.fabricOk 
+                                    ? 'border-emerald-400 bg-emerald-50/40 text-emerald-900' 
+                                    : 'border-rose-300 bg-rose-50/40 text-rose-900'
+                                }`} title={`Fabric: ${order['Fabric Update'] || '-'}`}>
+                                  <span className="text-[9px] uppercase font-bold text-slate-500 block">Fabric</span>
+                                  <span className="font-extrabold text-[11px] truncate block">
+                                    {order['Fabric Update'] || 'Pending'}
+                                  </span>
+                                </div>
 
-                              <span className={`px-2 py-0.5 rounded font-bold border ${
-                                readiness.finishingOk ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-rose-50 text-rose-800 border-rose-300'
-                              }`} title={`Finishing Acc: ${order['Finishing Acc. Update'] || '-'}`}>
-                                Fin: {order['Finishing Acc. Update'] || 'Pending'}
-                              </span>
+                                <div className={`p-1.5 rounded-lg border text-center ${
+                                  readiness.sewingOk 
+                                    ? 'border-emerald-400 bg-emerald-50/40 text-emerald-900' 
+                                    : 'border-rose-300 bg-rose-50/40 text-rose-900'
+                                }`} title={`Sewing Acc: ${order['Sewing Acc. Update'] || '-'}`}>
+                                  <span className="text-[9px] uppercase font-bold text-slate-500 block">Sew Acc</span>
+                                  <span className="font-extrabold text-[11px] truncate block">
+                                    {order['Sewing Acc. Update'] || 'Pending'}
+                                  </span>
+                                </div>
 
-                              {readiness.isReady ? (
-                                <span className="ml-auto text-[10px] font-extrabold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded">
-                                  READY
-                                </span>
-                              ) : (
-                                <span className="ml-auto text-[10px] font-extrabold text-rose-700 bg-rose-100 px-1.5 py-0.5 rounded">
-                                  INCOMPLETE
-                                </span>
-                              )}
+                                <div className={`p-1.5 rounded-lg border text-center ${
+                                  readiness.finishingOk 
+                                    ? 'border-emerald-400 bg-emerald-50/40 text-emerald-900' 
+                                    : 'border-rose-300 bg-rose-50/40 text-rose-900'
+                                }`} title={`Finishing Acc: ${order['Finishing Acc. Update'] || '-'}`}>
+                                  <span className="text-[9px] uppercase font-bold text-slate-500 block">Fin Acc</span>
+                                  <span className="font-extrabold text-[11px] truncate block">
+                                    {order['Finishing Acc. Update'] || 'Pending'}
+                                  </span>
+                                </div>
+                              </div>
                             </div>
                           </div>
                         );
@@ -1270,13 +1359,15 @@ export default function App() {
                             <td className="p-3 text-center border border-slate-300">
                               <button
                                 onClick={() => {
+                                  if (!requireAuthorization(lineName)) return;
                                   setEditingLine(lineName);
                                   setLineModalSearch('');
                                   setLineModalBuyerFilter('ALL');
                                 }}
-                                className="px-2.5 py-1 rounded bg-amber-500 text-slate-900 text-xs font-bold hover:bg-amber-400 cursor-pointer"
+                                className="px-2.5 py-1 rounded bg-amber-500 text-slate-900 text-xs font-bold hover:bg-amber-400 cursor-pointer flex items-center justify-center gap-1 mx-auto"
                               >
-                                Manage
+                                {isAuthorized ? null : <Lock size={11} />}
+                                <span>Manage</span>
                               </button>
                             </td>
                           </tr>
@@ -1296,13 +1387,15 @@ export default function App() {
                                   <span className="text-[11px] font-semibold text-slate-500 block mb-2">{orders.length}/5 POs</span>
                                   <button
                                     onClick={() => {
+                                      if (!requireAuthorization(lineName)) return;
                                       setEditingLine(lineName);
                                       setLineModalSearch('');
                                       setLineModalBuyerFilter('ALL');
                                     }}
-                                    className="px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-900 text-xs font-bold cursor-pointer"
+                                    className="px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-900 text-xs font-bold cursor-pointer flex items-center gap-1 shadow-2xs"
                                   >
-                                    Manage Line
+                                    {isAuthorized ? null : <Lock size={11} />}
+                                    <span>Manage Line</span>
                                   </button>
                                 </div>
                               </td>
@@ -1596,6 +1689,116 @@ export default function App() {
             </div>
           </div>
         </>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL: AUTHORIZATION / LOGIN FOR LINE WISE PO ALLOCATION */}
+      {/* ========================================================================= */}
+      {showAuthModal && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-md w-full shadow-2xl border border-slate-200 overflow-hidden animate-fadeIn">
+            {/* Header */}
+            <div className="p-5 bg-gradient-to-r from-slate-900 via-indigo-950 to-slate-900 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-2xl bg-amber-500/20 border border-amber-400 text-amber-300 flex items-center justify-center font-extrabold text-base">
+                  <Lock size={20} />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-base text-white">
+                    Planner Authorization
+                  </h3>
+                  <p className="text-xs text-slate-300">
+                    Felix Fashions Ltd • Store Department
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => {
+                  setShowAuthModal(false);
+                  setAuthError(null);
+                }}
+                className="h-8 w-8 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center cursor-pointer transition"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Form */}
+            <form onSubmit={handleLogin} className="p-6 space-y-4">
+              <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-900 leading-relaxed">
+                <p className="font-bold flex items-center gap-1.5 mb-1 text-amber-950">
+                  <ShieldCheck size={14} className="text-amber-700" />
+                  Public Dashboard Protection
+                </p>
+                <p>
+                  As this dashboard link is public, line-wise PO allocation and queue reordering require authorized credentials.
+                </p>
+              </div>
+
+              {authError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-800 text-xs rounded-xl flex items-center gap-2">
+                  <AlertCircle size={15} className="text-rose-600 shrink-0" />
+                  <span>{authError}</span>
+                </div>
+              )}
+
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">
+                  User / Role
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  value={authUsername}
+                  onChange={(e) => setAuthUsername(e.target.value)}
+                  placeholder="planner or store"
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold uppercase tracking-wider text-slate-700 mb-1.5">
+                  Password
+                </label>
+                <input
+                  type="password"
+                  required
+                  value={authPassword}
+                  onChange={(e) => setAuthPassword(e.target.value)}
+                  placeholder="Enter password..."
+                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-sm font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition"
+                />
+              </div>
+
+              <div className="p-2.5 bg-slate-100 rounded-xl border border-slate-200 text-[11px] text-slate-600 space-y-0.5">
+                <span className="font-bold text-slate-800 block">Default Credentials:</span>
+                <div>Username: <code className="font-mono font-bold text-blue-700">planner</code> or <code className="font-mono font-bold text-blue-700">store</code></div>
+                <div>Password: <code className="font-mono font-bold text-blue-700">felix123</code></div>
+              </div>
+
+              <div className="pt-2 flex items-center justify-end gap-2.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAuthModal(false);
+                    setAuthError(null);
+                  }}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl shadow-md transition cursor-pointer flex items-center gap-1.5"
+                >
+                  <KeyRound size={14} />
+                  <span>Authorize & Unlock</span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       )}
 
       {/* ========================================================================= */}
