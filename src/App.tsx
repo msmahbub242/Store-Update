@@ -35,7 +35,7 @@ import {
   LogOut,
   Database
 } from 'lucide-react';
-import { saveLineAllocationsToFirestore, subscribeToLineAllocations } from './firebase';
+import { saveLineAllocationsToFirestore, subscribeToLineAllocations, testFirestoreConnection } from './firebase';
 
 const PUB_BASE = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q';
 const PUBHTML_URL = `${PUB_BASE}/pubhtml`;
@@ -158,12 +158,19 @@ export default function App() {
   // Database connection & sync state
   const [isDbConnected, setIsDbConnected] = useState<boolean>(false);
   const [isDbSaving, setIsDbSaving] = useState<boolean>(false);
+  const [dbError, setDbError] = useState<string | null>(null);
   const [lastDbSaveTime, setLastDbSaveTime] = useState<Date | null>(null);
 
   // Subscribe to real-time Cloud Firestore updates so all devices and users stay in sync
   useEffect(() => {
+    // Check initial connection
+    testFirestoreConnection().then(ok => {
+      if (ok) setIsDbConnected(true);
+    });
+
     const unsubscribe = subscribeToLineAllocations(
       (remoteAllocations, updatedAt) => {
+        setIsDbConnected(true);
         if (remoteAllocations && typeof remoteAllocations === 'object') {
           setLineAllocations(prev => {
             const merged: Record<string, string[]> = { ...prev, ...remoteAllocations };
@@ -172,7 +179,6 @@ export default function App() {
             });
             return merged;
           });
-          setIsDbConnected(true);
           if (updatedAt) {
             setLastDbSaveTime(new Date(updatedAt));
           }
@@ -409,14 +415,27 @@ export default function App() {
     userRole: string = 'planner'
   ) => {
     setIsDbSaving(true);
-    saveLineAllocationsToFirestore(updatedAllocations, userRole)
+    setDbError(null);
+
+    // Timeout guard so the UI never hangs in saving state
+    const timeoutPromise = new Promise<never>((_, reject) => 
+      setTimeout(() => reject(new Error('Save request timed out. Please check network.')), 8000)
+    );
+
+    Promise.race([
+      saveLineAllocationsToFirestore(updatedAllocations, userRole),
+      timeoutPromise
+    ])
       .then(() => {
         setIsDbSaving(false);
+        setIsDbConnected(true);
         setLastDbSaveTime(new Date());
+        setDbError(null);
       })
-      .catch((err) => {
+      .catch((err: any) => {
         console.error('Error saving to Firestore:', err);
         setIsDbSaving(false);
+        setDbError(err?.message || 'Cloud sync failed');
       });
   };
 
@@ -728,11 +747,13 @@ export default function App() {
             <span className={`font-bold px-2 py-0.5 rounded text-[11px] ${
               isDbSaving 
                 ? 'bg-amber-100 text-amber-800' 
-                : isDbConnected 
-                  ? 'bg-emerald-100 text-emerald-800' 
-                  : 'bg-slate-200 text-slate-600'
+                : dbError
+                  ? 'bg-rose-100 text-rose-800'
+                  : isDbConnected 
+                    ? 'bg-emerald-100 text-emerald-800' 
+                    : 'bg-slate-200 text-slate-600'
             }`}>
-              {isDbSaving ? 'SAVING...' : isDbConnected ? 'LIVE SYNCED' : 'OFFLINE'}
+              {isDbSaving ? 'SAVING...' : dbError ? 'RETRY SYNC' : isDbConnected ? 'LIVE SYNCED' : 'CONNECTING...'}
             </span>
           </div>
 

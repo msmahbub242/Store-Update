@@ -1,12 +1,25 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getFirestore, doc, setDoc, getDoc, onSnapshot } from 'firebase/firestore';
+import { getFirestore, doc, setDoc, getDoc, onSnapshot, getDocFromServer } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
+// Initialize Firebase with the explicit database ID provisioned for this applet
 export const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-export const db = getFirestore(app);
+export const db = getFirestore(app, (firebaseConfig as any).firestoreDatabaseId);
 
 const ALLOCATIONS_DOC_PATH = 'line_allocations';
 const ALLOCATIONS_DOC_ID = 'current';
+
+// Validate connection on boot
+export const testFirestoreConnection = async (): Promise<boolean> => {
+  try {
+    const docRef = doc(db, ALLOCATIONS_DOC_PATH, ALLOCATIONS_DOC_ID);
+    await getDocFromServer(docRef);
+    return true;
+  } catch (error: any) {
+    console.warn('Firestore connection check:', error?.message || error);
+    return false;
+  }
+};
 
 export const saveLineAllocationsToFirestore = async (
   allocations: Record<string, string[]>,
@@ -26,7 +39,7 @@ export const saveLineAllocationsToFirestore = async (
 };
 
 export const subscribeToLineAllocations = (
-  onUpdate: (allocations: Record<string, string[]>, updatedAt?: string, updatedBy?: string) => void,
+  onUpdate: (allocations: Record<string, string[]> | null, updatedAt?: string, updatedBy?: string) => void,
   onError?: (error: Error) => void
 ) => {
   const docRef = doc(db, ALLOCATIONS_DOC_PATH, ALLOCATIONS_DOC_ID);
@@ -37,7 +50,12 @@ export const subscribeToLineAllocations = (
         const data = docSnap.data();
         if (data && data.allocations) {
           onUpdate(data.allocations, data.updatedAt, data.updatedBy);
+        } else {
+          onUpdate(null);
         }
+      } else {
+        // Document doesn't exist yet in cloud
+        onUpdate(null);
       }
     },
     (err) => {

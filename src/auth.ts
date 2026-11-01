@@ -1,8 +1,6 @@
-import { initializeApp } from 'firebase/app';
 import { getAuth, GoogleAuthProvider, signInWithPopup, User, onAuthStateChanged } from 'firebase/auth';
-import firebaseConfig from '../firebase-applet-config.json';
+import { app } from './firebase';
 
-const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 
 const provider = new GoogleAuthProvider();
