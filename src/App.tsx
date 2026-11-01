@@ -32,8 +32,10 @@ import {
   Unlock,
   ShieldCheck,
   KeyRound,
-  LogOut
+  LogOut,
+  Database
 } from 'lucide-react';
+import { saveLineAllocationsToFirestore, subscribeToLineAllocations } from './firebase';
 
 const PUB_BASE = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q';
 const PUBHTML_URL = `${PUB_BASE}/pubhtml`;
@@ -153,7 +155,41 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [pendingLineToManage, setPendingLineToManage] = useState<string | null>(null);
 
-  // Persist lineAllocations whenever they change
+  // Database connection & sync state
+  const [isDbConnected, setIsDbConnected] = useState<boolean>(false);
+  const [isDbSaving, setIsDbSaving] = useState<boolean>(false);
+  const [lastDbSaveTime, setLastDbSaveTime] = useState<Date | null>(null);
+
+  // Subscribe to real-time Cloud Firestore updates so all devices and users stay in sync
+  useEffect(() => {
+    const unsubscribe = subscribeToLineAllocations(
+      (remoteAllocations, updatedAt) => {
+        if (remoteAllocations && typeof remoteAllocations === 'object') {
+          setLineAllocations(prev => {
+            const merged: Record<string, string[]> = { ...prev, ...remoteAllocations };
+            ALL_LINE_NAMES.forEach(line => {
+              if (!merged[line]) merged[line] = [];
+            });
+            return merged;
+          });
+          setIsDbConnected(true);
+          if (updatedAt) {
+            setLastDbSaveTime(new Date(updatedAt));
+          }
+        }
+      },
+      (err) => {
+        console.warn('Real-time database connection error:', err);
+        setIsDbConnected(false);
+      }
+    );
+
+    return () => {
+      if (unsubscribe) unsubscribe();
+    };
+  }, []);
+
+  // Persist lineAllocations to localStorage as fast offline cache
   useEffect(() => {
     try {
       localStorage.setItem(LINE_ALLOCATION_STORAGE_KEY, JSON.stringify(lineAllocations));
@@ -367,7 +403,24 @@ export default function App() {
     return false;
   };
 
-  // Line allocation modifiers (Guarded by authorization)
+  // Centralized saver that saves to Cloud Firestore in real time
+  const persistAllocationsToDb = (
+    updatedAllocations: Record<string, string[]>,
+    userRole: string = 'planner'
+  ) => {
+    setIsDbSaving(true);
+    saveLineAllocationsToFirestore(updatedAllocations, userRole)
+      .then(() => {
+        setIsDbSaving(false);
+        setLastDbSaveTime(new Date());
+      })
+      .catch((err) => {
+        console.error('Error saving to Firestore:', err);
+        setIsDbSaving(false);
+      });
+  };
+
+  // Line allocation modifiers (Guarded by authorization & saved to Cloud Database)
   const addPoToLine = (lineName: string, orderKey: string) => {
     if (!requireAuthorization(lineName)) return;
     setLineAllocations(prev => {
@@ -377,19 +430,25 @@ export default function App() {
         alert('Each line can have a maximum of 5 Upcoming POs.');
         return prev;
       }
-      return {
+      const updated = {
         ...prev,
         [lineName]: [...current, orderKey]
       };
+      persistAllocationsToDb(updated, authUsername || 'planner');
+      return updated;
     });
   };
 
   const removePoFromLine = (lineName: string, orderKey: string) => {
     if (!requireAuthorization(lineName)) return;
-    setLineAllocations(prev => ({
-      ...prev,
-      [lineName]: (prev[lineName] || []).filter(k => k !== orderKey)
-    }));
+    setLineAllocations(prev => {
+      const updated = {
+        ...prev,
+        [lineName]: (prev[lineName] || []).filter(k => k !== orderKey)
+      };
+      persistAllocationsToDb(updated, authUsername || 'planner');
+      return updated;
+    });
   };
 
   const movePoInLine = (lineName: string, index: number, direction: 'up' | 'down') => {
@@ -401,7 +460,9 @@ export default function App() {
       const temp = list[index];
       list[index] = list[targetIndex];
       list[targetIndex] = temp;
-      return { ...prev, [lineName]: list };
+      const updated = { ...prev, [lineName]: list };
+      persistAllocationsToDb(updated, authUsername || 'planner');
+      return updated;
     });
   };
 
@@ -639,7 +700,7 @@ export default function App() {
         <div className="bg-gradient-to-r from-blue-700 via-indigo-600 to-blue-600 text-white px-8 py-3.5 rounded-full shadow-lg border border-blue-400/30 flex items-center space-x-3">
           <span className="h-3 w-3 rounded-full bg-emerald-400 animate-pulse"></span>
           <h1 className="text-xl md:text-2xl font-extrabold tracking-wide drop-shadow-sm">
-            Felix Store - Materials Status
+            Felix Store App - Materials Status
           </h1>
         </div>
 
@@ -656,6 +717,23 @@ export default function App() {
             >
               {isAutoRefreshEnabled ? 'ACTIVE (25s)' : 'PAUSED'}
             </button>
+          </div>
+
+          <span className="text-slate-300">•</span>
+
+          {/* Cloud Database real-time indicator */}
+          <div className="flex items-center gap-1.5 font-medium" title="Real-time Cloud Database synchronization">
+            <Database size={13} className={isDbSaving ? 'text-amber-500 animate-spin' : isDbConnected ? 'text-emerald-500' : 'text-slate-400'} />
+            <span>Cloud DB:</span>
+            <span className={`font-bold px-2 py-0.5 rounded text-[11px] ${
+              isDbSaving 
+                ? 'bg-amber-100 text-amber-800' 
+                : isDbConnected 
+                  ? 'bg-emerald-100 text-emerald-800' 
+                  : 'bg-slate-200 text-slate-600'
+            }`}>
+              {isDbSaving ? 'SAVING...' : isDbConnected ? 'LIVE SYNCED' : 'OFFLINE'}
+            </span>
           </div>
 
           <span className="text-slate-300">•</span>
@@ -2045,9 +2123,14 @@ export default function App() {
 
             {/* Modal Footer */}
             <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
-              <span className="text-xs text-slate-500">
-                Changes are automatically saved to your dashboard!
-              </span>
+              <div className="flex items-center gap-2 text-xs">
+                <Database size={14} className={isDbSaving ? "text-amber-500 animate-spin" : "text-emerald-600"} />
+                <span className={isDbSaving ? "text-amber-700 font-semibold" : "text-slate-600 font-medium"}>
+                  {isDbSaving 
+                    ? "Saving changes to Cloud Database..." 
+                    : "Saved to Cloud Database in real-time across all devices!"}
+                </span>
+              </div>
               <button
                 onClick={() => setEditingLine(null)}
                 className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl transition cursor-pointer"

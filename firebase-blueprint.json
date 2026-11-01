@@ -1,0 +1,30 @@
+{
+  "entities": {
+    "LineAllocations": {
+      "title": "LineAllocations",
+      "description": "Stores the assigned upcoming PO order keys for all 15 sewing lines",
+      "type": "object",
+      "properties": {
+        "allocations": {
+          "type": "object",
+          "description": "Map of line name to array of up to 5 order keys"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "ISO timestamp of the last update"
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "Username or role that saved the allocation"
+        }
+      },
+      "required": ["allocations"]
+    }
+  },
+  "firestore": {
+    "/line_allocations/{docId}": {
+      "schema": "LineAllocations",
+      "description": "Collection storing the active sewing line PO allocations"
+    }
+  }
+}
