@@ -6,16 +6,28 @@ import {
   ChevronRight, 
   SlidersHorizontal, 
   Check, 
-  RotateCcw,
-  Eye,
-  EyeOff,
-  Filter,
-  X,
-  RefreshCw,
-  Radio,
-  AlertTriangle,
-  Layers,
-  Sparkles
+  RotateCcw, 
+  Eye, 
+  EyeOff, 
+  Filter, 
+  X, 
+  RefreshCw, 
+  Radio, 
+  AlertTriangle, 
+  Layers, 
+  Sparkles,
+  Factory,
+  Plus,
+  Trash2,
+  ArrowUp,
+  ArrowDown,
+  CheckCircle2,
+  AlertCircle,
+  LayoutGrid,
+  Table as TableIcon,
+  ArrowUpDown,
+  Calendar,
+  Package
 } from 'lucide-react';
 
 const PUB_BASE = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q';
@@ -36,6 +48,10 @@ const INITIAL_TABS: TabItem[] = [
   { name: 'Madam', gid: '1025651909' },
 ];
 
+const TOTAL_SEWING_LINES = 15;
+const ALL_LINE_NAMES = Array.from({ length: TOTAL_SEWING_LINES }, (_, i) => `Line ${String(i + 1).padStart(2, '0')}`);
+const LINE_ALLOCATION_STORAGE_KEY = 'felix_sewing_line_allocations_v1';
+
 // Canonical column name normalizer to unify case differences across different buyer tabs
 const normalizeHeader = (rawKey: string): string | null => {
   const k = rawKey.trim().toLowerCase();
@@ -52,6 +68,7 @@ const normalizeHeader = (rawKey: string): string | null => {
   if (k.includes('sewing') || (k.includes('accessories') && !k.includes('finishing'))) return 'Sewing Acc. Update';
   if (k.includes('finishing')) return 'Finishing Acc. Update';
   if (k.includes('remark')) return 'Remarks';
+  if (k.includes('line')) return 'Line';
   return rawKey.trim();
 };
 
@@ -69,11 +86,21 @@ const STANDARD_COLUMN_ORDER = [
   'Remarks'
 ];
 
+// Helper to create a consistent unique key for each order row
+const getOrderRowKey = (row: any, index: number): string => {
+  const tab = row._tabSource || 'General';
+  const po = row['PO'] || '';
+  const style = row['STYLE'] || '';
+  const file = row['File No'] || '';
+  return `${tab}___${po}___${style}___${file}___${index}`;
+};
+
 export default function App() {
   const [tabs, setTabs] = useState<TabItem[]>(INITIAL_TABS);
   // Store data for all tabs in a map: tabName -> rows[]
   const [tabsData, setTabsData] = useState<Record<string, any[]>>({});
-  const [activeTabName, setActiveTabName] = useState<string>(INITIAL_TABS[0].name);
+  // activeTabName: can be a specific buyer tab name, '__ALL__', or '__LINE_WISE__'
+  const [activeTabName, setActiveTabName] = useState<string>('__LINE_WISE__');
   const [globalFilter, setGlobalFilter] = useState('');
   const [columnFilters, setColumnFilters] = useState<Record<string, string>>({});
   const [hiddenColumns, setHiddenColumns] = useState<string[]>([]);
@@ -86,6 +113,35 @@ export default function App() {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const rowsPerPage = 12;
+
+  // Line-wise state: Line Name -> Array of up to 5 Order Keys
+  const [lineAllocations, setLineAllocations] = useState<Record<string, string[]>>(() => {
+    try {
+      const saved = localStorage.getItem(LINE_ALLOCATION_STORAGE_KEY);
+      if (saved) return JSON.parse(saved);
+    } catch (e) {
+      console.warn('Failed to parse line allocations from localStorage', e);
+    }
+    const emptyMap: Record<string, string[]> = {};
+    ALL_LINE_NAMES.forEach(line => { emptyMap[line] = []; });
+    return emptyMap;
+  });
+
+  // Modal state for assigning / managing POs on a specific line
+  const [editingLine, setEditingLine] = useState<string | null>(null);
+  const [lineModalSearch, setLineModalSearch] = useState('');
+  const [lineModalBuyerFilter, setLineModalBuyerFilter] = useState('ALL');
+  const [lineViewMode, setLineViewMode] = useState<'cards' | 'table'>('cards');
+  const [selectedLineFilter, setSelectedLineFilter] = useState<string>('ALL');
+
+  // Persist lineAllocations whenever they change
+  useEffect(() => {
+    try {
+      localStorage.setItem(LINE_ALLOCATION_STORAGE_KEY, JSON.stringify(lineAllocations));
+    } catch (e) {
+      console.warn('Failed to save line allocations to localStorage', e);
+    }
+  }, [lineAllocations]);
 
   // 1. Discover tabs and GIDs dynamically from pubhtml
   const discoverTabs = useCallback(async (): Promise<TabItem[]> => {
@@ -144,7 +200,7 @@ export default function App() {
             resolve([]);
             return;
           }
-          const cleaned = (results.data as any[]).map(row => {
+          const cleaned = (results.data as any[]).map((row, idx) => {
             if (!row || typeof row !== 'object') return null;
             const newRow: any = { _tabSource: tabItem.name };
             Object.keys(row).forEach(key => {
@@ -156,6 +212,8 @@ export default function App() {
                 }
               }
             });
+            // Assign a unique row ID for line allocation
+            newRow._uniqueKey = getOrderRowKey(newRow, idx);
             return newRow;
           }).filter(row => row && Object.values(row).some(v => v !== undefined && v !== null && v !== '' && v !== row._tabSource));
           resolve(cleaned);
@@ -165,7 +223,7 @@ export default function App() {
     });
   };
 
-  // Fetch all tabs in parallel so universal search has data from ALL tabs
+  // Fetch all tabs in parallel so universal search & line assignment have full data
   const fetchAllTabs = useCallback(async (tabList: TabItem[], isSilent = false) => {
     if (!tabList || tabList.length === 0) return;
 
@@ -173,20 +231,6 @@ export default function App() {
     setIsRefreshing(true);
 
     try {
-      // First fetch active tab to provide instant user feedback
-      const activeObj = tabList.find(t => t.name === activeTabName) || tabList[0];
-      if (activeObj) {
-        try {
-          const activeRows = await parseSingleTab(activeObj);
-          setTabsData(prev => ({ ...prev, [activeObj.name]: activeRows }));
-          setLastUpdated(new Date());
-          setSyncNotice(null);
-        } catch (e: any) {
-          console.warn('Initial single tab fetch issue:', e.message);
-        }
-      }
-
-      // Then fetch all other tabs in parallel in the background
       const results = await Promise.allSettled(
         tabList.map(async tab => {
           const rows = await parseSingleTab(tab);
@@ -213,7 +257,7 @@ export default function App() {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [activeTabName]);
+  }, []);
 
   // Initial load
   useEffect(() => {
@@ -232,29 +276,123 @@ export default function App() {
     return () => clearInterval(intervalId);
   }, [isAutoRefreshEnabled, tabs, fetchAllTabs]);
 
-  // Determine if Universal Search mode is active (when user types something in search box)
-  const isUniversalSearchActive = globalFilter.trim().length > 0;
-
-  // Active dataset: if universal search is active, use all rows from ALL tabs; otherwise selected tab
-  const baseData = useMemo(() => {
-    if (isUniversalSearchActive || activeTabName === '__ALL__') {
-      const allRows: any[] = [];
-      Object.entries(tabsData).forEach(([tabName, rows]) => {
-        rows.forEach(r => {
-          allRows.push({ ...r, _tabSource: tabName });
+  // Master list of all orders across all tabs
+  const allMasterOrders = useMemo(() => {
+    const list: any[] = [];
+    Object.entries(tabsData).forEach(([tabName, rows]) => {
+      rows.forEach((r, idx) => {
+        list.push({ 
+          ...r, 
+          _tabSource: tabName, 
+          _uniqueKey: r._uniqueKey || getOrderRowKey(r, idx)
         });
       });
-      return allRows;
+    });
+    return list;
+  }, [tabsData]);
+
+  // Map of uniqueKey -> Order Object for fast line lookups
+  const ordersByKey = useMemo(() => {
+    const map = new Map<string, any>();
+    allMasterOrders.forEach(o => {
+      map.set(o._uniqueKey, o);
+    });
+    return map;
+  }, [allMasterOrders]);
+
+  // Auto-distribute upcoming POs into 15 lines if lines are currently empty
+  const autoDistributePOsToLines = useCallback(() => {
+    if (allMasterOrders.length === 0) return;
+
+    // Filter valid POs with a PO number
+    const available = allMasterOrders.filter(o => o['PO'] && String(o['PO']).trim() !== '');
+    
+    const newAllocations: Record<string, string[]> = {};
+    let currentIndex = 0;
+
+    ALL_LINE_NAMES.forEach(lineName => {
+      newAllocations[lineName] = [];
+      // Assign up to 5 POs per line
+      for (let slot = 0; slot < 5 && currentIndex < available.length; slot++) {
+        newAllocations[lineName].push(available[currentIndex]._uniqueKey);
+        currentIndex++;
+      }
+    });
+
+    setLineAllocations(newAllocations);
+  }, [allMasterOrders]);
+
+  // If user visits Line view and no lines have assignments yet, auto-fill once so it's ready immediately
+  useEffect(() => {
+    const hasAnyAllocations = Object.values(lineAllocations).some(arr => arr && arr.length > 0);
+    if (!hasAnyAllocations && allMasterOrders.length > 0) {
+      autoDistributePOsToLines();
+    }
+  }, [allMasterOrders, lineAllocations, autoDistributePOsToLines]);
+
+  // Line allocation modifiers
+  const addPoToLine = (lineName: string, orderKey: string) => {
+    setLineAllocations(prev => {
+      const current = prev[lineName] || [];
+      if (current.includes(orderKey)) return prev;
+      if (current.length >= 5) {
+        alert('Each line can have a maximum of 5 Upcoming POs.');
+        return prev;
+      }
+      return {
+        ...prev,
+        [lineName]: [...current, orderKey]
+      };
+    });
+  };
+
+  const removePoFromLine = (lineName: string, orderKey: string) => {
+    setLineAllocations(prev => ({
+      ...prev,
+      [lineName]: (prev[lineName] || []).filter(k => k !== orderKey)
+    }));
+  };
+
+  const movePoInLine = (lineName: string, index: number, direction: 'up' | 'down') => {
+    setLineAllocations(prev => {
+      const list = [...(prev[lineName] || [])];
+      const targetIndex = direction === 'up' ? index - 1 : index + 1;
+      if (targetIndex < 0 || targetIndex >= list.length) return prev;
+      const temp = list[index];
+      list[index] = list[targetIndex];
+      list[targetIndex] = temp;
+      return { ...prev, [lineName]: list };
+    });
+  };
+
+  const clearAllLines = () => {
+    if (window.confirm('Are you sure you want to reset all 15 line allocations?')) {
+      const empty: Record<string, string[]> = {};
+      ALL_LINE_NAMES.forEach(l => { empty[l] = []; });
+      setLineAllocations(empty);
+    }
+  };
+
+  // Determine if Universal Search mode is active
+  const isUniversalSearchActive = globalFilter.trim().length > 0;
+
+  // Active dataset for normal/all tabs
+  const baseData = useMemo(() => {
+    if (isUniversalSearchActive || activeTabName === '__ALL__') {
+      return allMasterOrders;
+    }
+    if (activeTabName === '__LINE_WISE__') {
+      return allMasterOrders;
     }
     return tabsData[activeTabName] || [];
-  }, [isUniversalSearchActive, activeTabName, tabsData]);
+  }, [isUniversalSearchActive, activeTabName, allMasterOrders, tabsData]);
 
-  // Filtered dataset combining global search and column header filters
+  // Filtered dataset for table view
   const filteredData = useMemo(() => {
     return baseData.filter(row => {
       if (!row) return false;
 
-      // Global Search across ALL tabs
+      // Global Search
       if (globalFilter.trim()) {
         const query = globalFilter.toLowerCase();
         const matchesGlobal = Object.entries(row).some(([k, val]) => {
@@ -290,18 +428,16 @@ export default function App() {
     });
 
     const ordered: string[] = [];
-    if (isUniversalSearchActive || activeTabName === '__ALL__') {
+    if (isUniversalSearchActive || activeTabName === '__ALL__' || activeTabName === '__LINE_WISE__') {
       ordered.push('Buyer Tab');
     }
 
-    // Add standard canonical columns in sequence
     STANDARD_COLUMN_ORDER.forEach(col => {
       if (col !== 'Buyer Tab' && keys.has(col)) {
         ordered.push(col);
       }
     });
 
-    // Add any remaining custom columns
     keys.forEach(k => {
       if (k !== 'Buyer Tab' && !ordered.includes(k)) {
         ordered.push(k);
@@ -311,7 +447,6 @@ export default function App() {
     return ordered;
   }, [baseData, isUniversalSearchActive, activeTabName]);
 
-  // Columns currently visible
   const visibleColumns = useMemo(() => {
     return allColumns.filter(col => !hiddenColumns.includes(col));
   }, [allColumns, hiddenColumns]);
@@ -347,7 +482,7 @@ export default function App() {
     }, 0);
   }, [filteredData]);
 
-  // Count which tabs have matches during universal search
+  // Tab match counts for search
   const tabMatchesCount = useMemo(() => {
     if (!isUniversalSearchActive) return {};
     const counts: Record<string, number> = {};
@@ -375,6 +510,19 @@ export default function App() {
     );
   };
 
+  const checkOrderReadiness = (order: any): { isReady: boolean; fabricOk: boolean; sewingOk: boolean; finishingOk: boolean } => {
+    if (!order) return { isReady: false, fabricOk: false, sewingOk: false, finishingOk: false };
+    const fabricOk = String(order['Fabric Update'] || order['Fabric'] || '').toLowerCase().trim() === 'ok';
+    const sewingOk = String(order['Sewing Acc. Update'] || order['Sewing'] || order['sewing Acc'] || '').toLowerCase().trim() === 'ok';
+    const finishingOk = String(order['Finishing Acc. Update'] || order['Finishing'] || order['Finishing accessories'] || '').toLowerCase().trim() === 'ok';
+    return {
+      isReady: fabricOk && sewingOk && finishingOk,
+      fabricOk,
+      sewingOk,
+      finishingOk
+    };
+  };
+
   const getStatusPill = (val: string) => {
     const text = (val ?? '').toString().trim();
     if (!text) {
@@ -400,6 +548,57 @@ export default function App() {
       </div>
     );
   };
+
+  // Line-wise aggregated metrics for summary
+  const lineMetrics = useMemo(() => {
+    let totalAllocatedPos = 0;
+    let totalReadyPos = 0;
+    let linesWithFullQueue = 0;
+
+    ALL_LINE_NAMES.forEach(line => {
+      const keys = lineAllocations[line] || [];
+      totalAllocatedPos += keys.length;
+      if (keys.length === 5) linesWithFullQueue++;
+      keys.forEach(k => {
+        const order = ordersByKey.get(k);
+        if (order && checkOrderReadiness(order).isReady) {
+          totalReadyPos++;
+        }
+      });
+    });
+
+    return {
+      totalAllocatedPos,
+      totalReadyPos,
+      linesWithFullQueue,
+      readyPercentage: totalAllocatedPos > 0 ? Math.round((totalReadyPos / totalAllocatedPos) * 100) : 0
+    };
+  }, [lineAllocations, ordersByKey]);
+
+  // Filtered line list based on line filter & search query
+  const displayedLineNames = useMemo(() => {
+    return ALL_LINE_NAMES.filter(lineName => {
+      if (selectedLineFilter !== 'ALL' && lineName !== selectedLineFilter) {
+        return false;
+      }
+      if (globalFilter.trim()) {
+        const q = globalFilter.toLowerCase();
+        // Check if line name matches
+        if (lineName.toLowerCase().includes(q)) return true;
+        // Check if any allocated PO inside this line matches
+        const keys = lineAllocations[lineName] || [];
+        return keys.some(k => {
+          const order = ordersByKey.get(k);
+          if (!order) return false;
+          return Object.entries(order).some(([key, val]) => {
+            if (key.startsWith('_')) return false;
+            return String(val ?? '').toLowerCase().includes(q);
+          });
+        });
+      }
+      return true;
+    });
+  }, [selectedLineFilter, globalFilter, lineAllocations, ordersByKey]);
 
   return (
     <div className="p-4 md:p-8 bg-slate-50 min-h-screen text-slate-800 font-sans">
@@ -469,58 +668,113 @@ export default function App() {
       
       {/* Summary Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              {isUniversalSearchActive ? 'Matched Orders (All Tabs)' : 'Total Orders'}
-            </p>
-            <p className="text-2xl font-extrabold text-slate-900 mt-1">{filteredData.length}</p>
-          </div>
-          <div className="h-12 w-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-lg border border-blue-100">
-            📦
-          </div>
-        </div>
+        {activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
+          <>
+            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Sewing Lines</p>
+                <p className="text-2xl font-extrabold text-slate-900 mt-1">15 Lines</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">5 Upcoming POs per line</p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold text-xl border border-amber-100">
+                🏭
+              </div>
+            </div>
 
-        <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-              {isUniversalSearchActive ? 'Matched DZN (All Tabs)' : 'Total DZN'}
-            </p>
-            <p className="text-2xl font-extrabold text-indigo-900 mt-1">
-              {totalDzn.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
-            </p>
-          </div>
-          <div className="h-12 w-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-lg border border-indigo-100">
-            📊
-          </div>
-        </div>
+            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Line Allocated POs</p>
+                <p className="text-2xl font-extrabold text-blue-900 mt-1">
+                  {lineMetrics.totalAllocatedPos} <span className="text-sm font-normal text-slate-400">/ 75 Target</span>
+                </p>
+                <p className="text-[11px] text-emerald-600 font-semibold mt-0.5">{lineMetrics.linesWithFullQueue} Lines full (5/5)</p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-xl border border-blue-100">
+                📋
+              </div>
+            </div>
 
-        <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Visible Columns</p>
-            <p className="text-2xl font-extrabold text-slate-900 mt-1">
-              {visibleColumns.length} <span className="text-sm font-normal text-slate-400">/ {allColumns.length}</span>
-            </p>
-          </div>
-          <div className="h-12 w-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold text-lg border border-amber-100">
-            👀
-          </div>
-        </div>
+            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">100% Material Ready</p>
+                <p className="text-2xl font-extrabold text-emerald-700 mt-1">
+                  {lineMetrics.totalReadyPos}{' '}
+                  <span className="text-sm font-bold text-slate-500">({lineMetrics.readyPercentage}%)</span>
+                </p>
+                <p className="text-[11px] text-slate-500 mt-0.5">Fabric, Sewing & Finishing OK</p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-xl border border-emerald-100">
+                ✅
+              </div>
+            </div>
 
-        <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
-          <div>
-            <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Search Scope</p>
-            <p className="text-sm font-bold text-emerald-700 mt-1 truncate max-w-[150px]">
-              {isUniversalSearchActive ? 'All Buyer Tabs' : activeTabName}
-            </p>
-          </div>
-          <div className="h-12 w-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-lg border border-emerald-100">
-            🏷️
-          </div>
-        </div>
+            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Orders in Store</p>
+                <p className="text-2xl font-extrabold text-indigo-900 mt-1">{allMasterOrders.length}</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">Available across all buyers</p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-xl border border-indigo-100">
+                📦
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  {isUniversalSearchActive ? 'Matched Orders (All Tabs)' : 'Total Orders'}
+                </p>
+                <p className="text-2xl font-extrabold text-slate-900 mt-1">{filteredData.length}</p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-lg border border-blue-100">
+                📦
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
+                  {isUniversalSearchActive ? 'Matched DZN (All Tabs)' : 'Total DZN'}
+                </p>
+                <p className="text-2xl font-extrabold text-indigo-900 mt-1">
+                  {totalDzn.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-lg border border-indigo-100">
+                📊
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Visible Columns</p>
+                <p className="text-2xl font-extrabold text-slate-900 mt-1">
+                  {visibleColumns.length} <span className="text-sm font-normal text-slate-400">/ {allColumns.length}</span>
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold text-lg border border-amber-100">
+                👀
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Active View</p>
+                <p className="text-sm font-bold text-emerald-700 mt-1 truncate max-w-[150px]">
+                  {isUniversalSearchActive ? 'All Buyer Tabs' : activeTabName === '__ALL__' ? 'All Combined' : activeTabName}
+                </p>
+              </div>
+              <div className="h-12 w-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-lg border border-emerald-100">
+                🏷️
+              </div>
+            </div>
+          </>
+        )}
       </div>
 
-      {/* 2. SEARCH & ACTION BAR - MOVED ABOVE THE TAB SWITCHER */}
+      {/* 2. SEARCH & ACTION BAR */}
       <div className="bg-white p-4 rounded-2xl shadow-xs border border-slate-200 mb-4">
         <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
           {/* Global Search across ALL tabs */}
@@ -528,7 +782,7 @@ export default function App() {
             <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-blue-600" size={19} />
             <input
               className="w-full pl-10 pr-10 py-3 bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-300 rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition shadow-2xs"
-              placeholder="🔍 Search across ALL tabs & buyers (by Style, PO, Buyer, Item, Remark...)"
+              placeholder="🔍 Search across ALL tabs, buyers & lines (by PO, Style, Buyer, Item, Line, Remark...)"
               value={globalFilter}
               onChange={(e) => {
                 setGlobalFilter(e.target.value);
@@ -551,42 +805,92 @@ export default function App() {
 
           {/* Action Buttons */}
           <div className="flex items-center gap-2">
-            {/* Header Filters Toggle */}
-            <button
-              onClick={() => setShowHeaderFilterRow(prev => !prev)}
-              className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
-                showHeaderFilterRow || Object.values(columnFilters).some(Boolean)
-                  ? 'bg-indigo-50 text-indigo-700 border-indigo-300'
-                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-              }`}
-              title="Toggle individual column header filters"
-            >
-              <Filter size={15} />
-              <span>Column Filters</span>
-              {Object.values(columnFilters).filter(Boolean).length > 0 && (
-                <span className="bg-indigo-600 text-white rounded-full px-1.5 py-0.2 text-[10px] font-bold">
-                  {Object.values(columnFilters).filter(Boolean).length}
-                </span>
-              )}
-            </button>
+            {activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
+              <>
+                {/* Auto-distribute Button */}
+                <button
+                  onClick={autoDistributePOsToLines}
+                  className="flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl text-xs font-semibold bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition cursor-pointer"
+                  title="Auto-fill lines with earliest upcoming POs"
+                >
+                  <ArrowUpDown size={14} />
+                  <span>Auto-Fill POs</span>
+                </button>
 
-            {/* Column Visibility Control Button */}
-            <button
-              onClick={() => setIsColumnPanelOpen(prev => !prev)}
-              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
-                isColumnPanelOpen
-                  ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                  : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-              }`}
-            >
-              <SlidersHorizontal size={15} />
-              <span>Customize Columns</span>
-              <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
-                isColumnPanelOpen ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
-              }`}>
-                {visibleColumns.length}
-              </span>
-            </button>
+                {/* Clear allocations */}
+                <button
+                  onClick={clearAllLines}
+                  className="flex items-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-semibold bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 transition cursor-pointer"
+                  title="Reset all lines"
+                >
+                  <Trash2 size={14} />
+                  <span className="hidden sm:inline">Reset</span>
+                </button>
+
+                {/* View Mode Toggle */}
+                <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
+                  <button
+                    onClick={() => setLineViewMode('cards')}
+                    className={`p-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition cursor-pointer ${
+                      lineViewMode === 'cards' ? 'bg-white text-blue-700 shadow-2xs' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                    title="Card / Grid View"
+                  >
+                    <LayoutGrid size={15} />
+                    <span className="hidden sm:inline">Cards</span>
+                  </button>
+                  <button
+                    onClick={() => setLineViewMode('table')}
+                    className={`p-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition cursor-pointer ${
+                      lineViewMode === 'table' ? 'bg-white text-blue-700 shadow-2xs' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                    title="Grouped Table View"
+                  >
+                    <TableIcon size={15} />
+                    <span className="hidden sm:inline">Table</span>
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {/* Header Filters Toggle */}
+                <button
+                  onClick={() => setShowHeaderFilterRow(prev => !prev)}
+                  className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
+                    showHeaderFilterRow || Object.values(columnFilters).some(Boolean)
+                      ? 'bg-indigo-50 text-indigo-700 border-indigo-300'
+                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                  }`}
+                  title="Toggle individual column header filters"
+                >
+                  <Filter size={15} />
+                  <span>Column Filters</span>
+                  {Object.values(columnFilters).filter(Boolean).length > 0 && (
+                    <span className="bg-indigo-600 text-white rounded-full px-1.5 py-0.2 text-[10px] font-bold">
+                      {Object.values(columnFilters).filter(Boolean).length}
+                    </span>
+                  )}
+                </button>
+
+                {/* Column Visibility Control Button */}
+                <button
+                  onClick={() => setIsColumnPanelOpen(prev => !prev)}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
+                    isColumnPanelOpen
+                      ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
+                  }`}
+                >
+                  <SlidersHorizontal size={15} />
+                  <span>Customize Columns</span>
+                  <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                    isColumnPanelOpen ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
+                  }`}>
+                    {visibleColumns.length}
+                  </span>
+                </button>
+              </>
+            )}
           </div>
         </div>
 
@@ -613,8 +917,33 @@ export default function App() {
         )}
       </div>
 
-      {/* 3. TAB SWITCHER - PLACED DIRECTLY UNDER THE SEARCH BOX */}
+      {/* 3. TAB SWITCHER - "Line Wise Update" placed RIGHT BEFORE "All Buyers" */}
       <div className="flex items-center space-x-2 overflow-x-auto pb-2 mb-6 scrollbar-none">
+        {/* NEW: Line Wise Update Tab (15 Sewing Lines) */}
+        <button
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-sm transition-all whitespace-nowrap cursor-pointer shadow-xs ${
+            !isUniversalSearchActive && activeTabName === '__LINE_WISE__'
+              ? 'bg-amber-600 text-white shadow-md shadow-amber-500/25 ring-2 ring-amber-600 ring-offset-2'
+              : 'bg-white text-slate-700 border border-slate-200 hover:bg-amber-50/70 hover:text-amber-800'
+          }`}
+          onClick={() => {
+            setGlobalFilter('');
+            setActiveTabName('__LINE_WISE__');
+            setCurrentPage(1);
+          }}
+        >
+          <Factory size={16} className={!isUniversalSearchActive && activeTabName === '__LINE_WISE__' ? 'text-amber-100' : 'text-amber-600'} />
+          <span>Line Wise Update</span>
+          <span className={`text-[11px] font-extrabold px-2 py-0.5 rounded-full ${
+            !isUniversalSearchActive && activeTabName === '__LINE_WISE__'
+              ? 'bg-amber-700/80 text-amber-100'
+              : 'bg-amber-100 text-amber-800'
+          }`}>
+            15 Lines
+          </span>
+        </button>
+
+        {/* All Buyers (Combined) Tab */}
         <button
           className={`flex items-center gap-1.5 px-4.5 py-2.5 rounded-xl font-bold text-sm transition-all whitespace-nowrap cursor-pointer ${
             !isUniversalSearchActive && activeTabName === '__ALL__'
@@ -631,6 +960,7 @@ export default function App() {
           <span>All Buyers (Combined)</span>
         </button>
 
+        {/* Individual Buyer Tabs */}
         {tabs.map(tab => (
           <button
             key={tab.name}
@@ -656,239 +986,880 @@ export default function App() {
         ))}
       </div>
 
-      {/* Column Visibility Panel (Expandable) */}
-      {isColumnPanelOpen && (
-        <div className="bg-white p-5 rounded-2xl shadow-sm border border-blue-200 mb-6 transition-all">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-200 gap-2 mb-4">
-            <div>
-              <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-                <SlidersHorizontal size={16} className="text-blue-600" />
-                Column Visibility Manager
-              </h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Toggle checkmarks to show or hide specific columns in the table below.
-              </p>
+      {/* ========================================================================= */}
+      {/* RENDER CONTENT: EITHER "LINE WISE UPDATE" OR "STANDARD TABLE DASHBOARD" */}
+      {/* ========================================================================= */}
+
+      {activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
+        /* LINE WISE UPDATE VIEW */
+        <div className="space-y-6">
+          {/* Line Filter Pills (Line 01 to Line 15) */}
+          <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-xs flex items-center justify-between gap-3 flex-wrap">
+            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-600 shrink-0">
+              <Factory size={15} className="text-amber-600" />
+              <span>Select Line:</span>
             </div>
-            <div className="flex items-center gap-2">
+            
+            <div className="flex items-center gap-1.5 flex-wrap flex-1">
               <button
-                onClick={showAllColumns}
-                className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1.5 transition cursor-pointer"
+                onClick={() => setSelectedLineFilter('ALL')}
+                className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                  selectedLineFilter === 'ALL'
+                    ? 'bg-slate-900 text-white shadow-2xs'
+                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                }`}
               >
-                <Eye size={13} />
-                Show All
+                All 15 Lines
               </button>
-              <button
-                onClick={hideAllColumns}
-                className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1.5 transition cursor-pointer"
-              >
-                <EyeOff size={13} />
-                Hide Extra
-              </button>
-              <button
-                onClick={() => setHiddenColumns([])}
-                className="px-3 py-1.5 text-xs font-semibold rounded-lg text-blue-600 hover:bg-blue-50 flex items-center gap-1.5 transition cursor-pointer"
-              >
-                <RotateCcw size={13} />
-                Reset
-              </button>
+              {ALL_LINE_NAMES.map(lineName => {
+                const count = (lineAllocations[lineName] || []).length;
+                return (
+                  <button
+                    key={lineName}
+                    onClick={() => setSelectedLineFilter(lineName)}
+                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
+                      selectedLineFilter === lineName
+                        ? 'bg-amber-600 text-white shadow-2xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    <span>{lineName}</span>
+                    <span className={`text-[10px] px-1 rounded ${selectedLineFilter === lineName ? 'bg-amber-700 text-amber-100' : 'bg-slate-200 text-slate-700'}`}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
-            {allColumns.map(col => {
-              const isVisible = !hiddenColumns.includes(col);
-              const isStatus = isStatusColumn(col);
-              return (
-                <label
-                  key={col}
-                  className={`flex items-center gap-2 p-2.5 rounded-xl border text-xs font-medium cursor-pointer transition select-none ${
-                    isVisible
-                      ? 'bg-blue-50/70 border-blue-300 text-blue-900 font-semibold'
-                      : 'bg-slate-50 border-slate-200 text-slate-400 hover:border-slate-300'
-                  }`}
-                >
-                  <input
-                    type="checkbox"
-                    checked={isVisible}
-                    onChange={() => toggleColumnVisibility(col)}
-                    className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4 border-slate-300"
-                  />
-                  <span className="truncate" title={col}>
-                    {col}
-                  </span>
-                  {isStatus && (
-                    <span className="ml-auto w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Status Column" />
-                  )}
-                </label>
-              );
-            })}
-          </div>
-        </div>
-      )}
+          {/* Line Wise Card Board View */}
+          {lineViewMode === 'cards' ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {displayedLineNames.map(lineName => {
+                const allocatedKeys = lineAllocations[lineName] || [];
+                const orders = allocatedKeys.map(k => ordersByKey.get(k)).filter(Boolean);
+                const readyCount = orders.filter(o => checkOrderReadiness(o).isReady).length;
 
-      {/* Table Container with FULL COMPLETE CELL BORDERS */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-300 overflow-hidden">
-        <div className="overflow-x-auto">
-          {isLoading ? (
-            <div className="py-20 text-center text-slate-500">
-              <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent mb-3"></div>
-              <p className="font-semibold text-sm">Loading data from Google Sheets...</p>
-            </div>
-          ) : visibleColumns.length === 0 ? (
-            <div className="py-16 text-center text-slate-500">
-              <p className="text-sm font-semibold">All columns are hidden.</p>
-              <button
-                onClick={showAllColumns}
-                className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-semibold"
-              >
-                Restore Columns
-              </button>
-            </div>
-          ) : (
-            <table className="w-full text-left border-collapse border border-slate-300">
-              <thead>
-                {/* Main Table Column Header */}
-                <tr className="bg-slate-100 text-slate-800">
-                  {visibleColumns.map((col) => {
-                    const isStatus = isStatusColumn(col);
-                    const isRemark = col.toLowerCase().includes('remark');
-                    const allowWrap = isStatus || isRemark;
-                    return (
-                      <th 
-                        key={col} 
-                        className={`p-3.5 font-bold text-xs uppercase tracking-wider border border-slate-300 select-none ${
-                          col === 'Buyer Tab' ? 'bg-indigo-100 text-indigo-950 font-extrabold' : 'bg-slate-100'
-                        } ${allowWrap ? 'min-w-[170px] max-w-[280px]' : 'whitespace-nowrap'}`}
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span>{col}</span>
-                          {isStatus && (
-                            <span className="text-[10px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-normal normal-case">
-                              status
-                            </span>
-                          )}
+                return (
+                  <div 
+                    key={lineName} 
+                    className="bg-white rounded-2xl border border-slate-200 shadow-xs hover:shadow-md transition-shadow flex flex-col overflow-hidden"
+                  >
+                    {/* Line Header */}
+                    <div className="p-4 bg-gradient-to-r from-slate-900 to-slate-800 text-white flex items-center justify-between">
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-9 w-9 rounded-xl bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center justify-center font-extrabold text-sm">
+                          {lineName.replace('Line ', 'L')}
                         </div>
-                      </th>
-                    );
-                  })}
-                </tr>
+                        <div>
+                          <h3 className="font-extrabold text-base tracking-wide text-white flex items-center gap-2">
+                            <span>{lineName}</span>
+                            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-700 text-slate-200">
+                              {orders.length} / 5 POs
+                            </span>
+                          </h3>
+                          <p className="text-[11px] text-slate-400">
+                            Upcoming Production Queue
+                          </p>
+                        </div>
+                      </div>
 
-                {/* In-Header Filter Row */}
-                {showHeaderFilterRow && (
-                  <tr className="bg-slate-50 border-b border-slate-300">
-                    {visibleColumns.map((col) => (
-                      <th key={`filter-${col}`} className="p-1.5 border border-slate-300 bg-slate-50">
-                        <input
-                          type="text"
-                          placeholder={`Filter ${col}...`}
-                          value={columnFilters[col] || ''}
-                          onChange={(e) => setColumnFilter(col, e.target.value)}
-                          className="w-full text-xs font-normal px-2 py-1 bg-white border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 focus:outline-none placeholder:text-slate-400"
-                        />
-                      </th>
-                    ))}
-                  </tr>
-                )}
-              </thead>
+                      {/* Manage / Assign POs Button */}
+                      <button
+                        onClick={() => {
+                          setEditingLine(lineName);
+                          setLineModalSearch('');
+                          setLineModalBuyerFilter('ALL');
+                        }}
+                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition flex items-center gap-1 shadow-2xs cursor-pointer"
+                        title={`Assign or manage 5 POs for ${lineName}`}
+                      >
+                        <Plus size={13} />
+                        <span>Manage POs</span>
+                      </button>
+                    </div>
 
-              <tbody>
-                {currentRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={visibleColumns.length} className="py-12 text-center text-slate-400 border border-slate-300">
-                      {isUniversalSearchActive 
-                        ? `No orders matching "${globalFilter}" found across all tabs.` 
-                        : 'No matching records found in this sheet.'}
-                    </td>
-                  </tr>
-                ) : (
-                  currentRows.map((row, i) => (
-                    <tr 
-                      key={i} 
-                      className={`${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-blue-50/40 transition-colors`}
-                    >
-                      {visibleColumns.map((col) => {
-                        if (col === 'Buyer Tab') {
+                    {/* Readiness Bar */}
+                    <div className="px-4 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center justify-between text-xs">
+                      <span className="font-semibold text-slate-600">Material Readiness:</span>
+                      <span className={`font-bold flex items-center gap-1 ${readyCount === orders.length && orders.length > 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                        {readyCount === orders.length && orders.length > 0 ? <CheckCircle2 size={13} /> : <AlertCircle size={13} />}
+                        {readyCount} of {orders.length} Ready for Sewing
+                      </span>
+                    </div>
+
+                    {/* 5 PO Slots Queue */}
+                    <div className="p-4 flex-1 flex flex-col gap-3">
+                      {Array.from({ length: 5 }).map((_, slotIndex) => {
+                        const order = orders[slotIndex];
+                        const slotNum = slotIndex + 1;
+                        const isRunning = slotIndex === 0;
+
+                        if (!order) {
                           return (
-                            <td key={col} className="p-3 text-xs font-bold text-indigo-800 bg-indigo-50/50 border border-slate-300 whitespace-nowrap align-top">
-                              <span className="bg-indigo-100 px-2.5 py-1 rounded-md border border-indigo-200 inline-block">
-                                {row._tabSource || activeTabName}
+                            <div 
+                              key={slotIndex} 
+                              onClick={() => {
+                                setEditingLine(lineName);
+                                setLineModalSearch('');
+                                setLineModalBuyerFilter('ALL');
+                              }}
+                              className="border-2 border-dashed border-slate-200 rounded-xl p-3 text-center text-slate-400 hover:border-amber-300 hover:bg-amber-50/30 transition cursor-pointer flex items-center justify-center gap-2 min-h-[70px]"
+                            >
+                              <span className="h-5 w-5 rounded-full bg-slate-100 text-slate-500 font-bold text-xs flex items-center justify-center">
+                                #{slotNum}
                               </span>
-                            </td>
+                              <span className="text-xs font-medium">Empty Slot {slotNum} — Click to assign PO</span>
+                            </div>
                           );
                         }
 
-                        const val = row[col];
+                        const readiness = checkOrderReadiness(order);
+
+                        return (
+                          <div 
+                            key={order._uniqueKey || slotIndex} 
+                            className={`rounded-xl border p-3 transition-all relative ${
+                              isRunning 
+                                ? 'bg-amber-50/50 border-amber-300 ring-1 ring-amber-400/40' 
+                                : 'bg-white border-slate-200 hover:border-slate-300 shadow-2xs'
+                            }`}
+                          >
+                            {/* Top row: Queue Badge + Buyer + Running indicator */}
+                            <div className="flex items-center justify-between gap-2 mb-2">
+                              <div className="flex items-center gap-1.5">
+                                <span className={`text-[11px] font-extrabold px-2 py-0.5 rounded-md ${
+                                  isRunning ? 'bg-amber-600 text-white' : 'bg-slate-200 text-slate-800'
+                                }`}>
+                                  #{slotNum} {isRunning && '• NEXT / RUNNING'}
+                                </span>
+                                <span className="text-[11px] font-bold px-2 py-0.5 rounded-md bg-blue-100 text-blue-800">
+                                  {order._tabSource || 'Buyer'}
+                                </span>
+                              </div>
+
+                              <div className="flex items-center gap-1">
+                                {slotIndex > 0 && (
+                                  <button
+                                    onClick={() => movePoInLine(lineName, slotIndex, 'up')}
+                                    className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                                    title="Move Up in queue"
+                                  >
+                                    <ArrowUp size={13} />
+                                  </button>
+                                )}
+                                {slotIndex < orders.length - 1 && (
+                                  <button
+                                    onClick={() => movePoInLine(lineName, slotIndex, 'down')}
+                                    className="p-1 rounded text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
+                                    title="Move Down in queue"
+                                  >
+                                    <ArrowDown size={13} />
+                                  </button>
+                                )}
+                                <button
+                                  onClick={() => removePoFromLine(lineName, order._uniqueKey)}
+                                  className="p-1 rounded text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
+                                  title="Remove from line"
+                                >
+                                  <X size={13} />
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* Order Details: PO, Style, Item, DZN, Ship Date */}
+                            <div className="grid grid-cols-2 gap-x-2 gap-y-1 text-xs mb-2.5">
+                              <div>
+                                <span className="text-slate-400 text-[10px] uppercase font-bold block">PO Number:</span>
+                                <span className="font-extrabold text-slate-900 text-sm tracking-wide">{order['PO'] || '-'}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 text-[10px] uppercase font-bold block">Style:</span>
+                                <span className="font-bold text-slate-800 truncate block" title={order['STYLE']}>{order['STYLE'] || '-'}</span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 text-[10px] uppercase font-bold block">Item & File:</span>
+                                <span className="text-slate-700 truncate block" title={`${order['ITEM']} (${order['File No']})`}>
+                                  {order['ITEM'] || '-'} {order['File No'] && `(${order['File No']})`}
+                                </span>
+                              </div>
+                              <div>
+                                <span className="text-slate-400 text-[10px] uppercase font-bold block">DZN & Ship Date:</span>
+                                <span className="font-bold text-indigo-700">
+                                  {order['DZN'] || '-'} Dzn • {order['SHIP DATE'] || '-'}
+                                </span>
+                              </div>
+                            </div>
+
+                            {/* Material Status Badges: Fabric, Sewing Acc, Finishing Acc */}
+                            <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center gap-1.5 text-[11px]">
+                              <span className="text-slate-400 text-[10px] font-bold">Materials:</span>
+                              
+                              <span className={`px-2 py-0.5 rounded font-bold border ${
+                                readiness.fabricOk ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-rose-50 text-rose-800 border-rose-300'
+                              }`} title={`Fabric: ${order['Fabric Update'] || '-'}`}>
+                                Fab: {order['Fabric Update'] || 'Pending'}
+                              </span>
+
+                              <span className={`px-2 py-0.5 rounded font-bold border ${
+                                readiness.sewingOk ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-rose-50 text-rose-800 border-rose-300'
+                              }`} title={`Sewing Acc: ${order['Sewing Acc. Update'] || '-'}`}>
+                                Sew: {order['Sewing Acc. Update'] || 'Pending'}
+                              </span>
+
+                              <span className={`px-2 py-0.5 rounded font-bold border ${
+                                readiness.finishingOk ? 'bg-emerald-50 text-emerald-800 border-emerald-300' : 'bg-rose-50 text-rose-800 border-rose-300'
+                              }`} title={`Finishing Acc: ${order['Finishing Acc. Update'] || '-'}`}>
+                                Fin: {order['Finishing Acc. Update'] || 'Pending'}
+                              </span>
+
+                              {readiness.isReady ? (
+                                <span className="ml-auto text-[10px] font-extrabold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded">
+                                  READY
+                                </span>
+                              ) : (
+                                <span className="ml-auto text-[10px] font-extrabold text-rose-700 bg-rose-100 px-1.5 py-0.5 rounded">
+                                  INCOMPLETE
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            /* Line Wise Grouped Table View */
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-300 overflow-hidden">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse border border-slate-300">
+                  <thead className="bg-slate-100 text-slate-800 text-xs uppercase font-bold">
+                    <tr>
+                      <th className="p-3 border border-slate-300">Sewing Line</th>
+                      <th className="p-3 border border-slate-300">Queue #</th>
+                      <th className="p-3 border border-slate-300">Buyer Tab</th>
+                      <th className="p-3 border border-slate-300">PO Number</th>
+                      <th className="p-3 border border-slate-300">Style</th>
+                      <th className="p-3 border border-slate-300">Item</th>
+                      <th className="p-3 border border-slate-300">DZN</th>
+                      <th className="p-3 border border-slate-300">Ship Date</th>
+                      <th className="p-3 border border-slate-300">Fabric Status</th>
+                      <th className="p-3 border border-slate-300">Sewing Acc Status</th>
+                      <th className="p-3 border border-slate-300">Finishing Status</th>
+                      <th className="p-3 border border-slate-300 text-center">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 text-sm">
+                    {displayedLineNames.map(lineName => {
+                      const allocatedKeys = lineAllocations[lineName] || [];
+                      const orders = allocatedKeys.map(k => ordersByKey.get(k)).filter(Boolean);
+
+                      if (orders.length === 0) {
+                        return (
+                          <tr key={lineName} className="hover:bg-slate-50">
+                            <td className="p-3 font-extrabold text-slate-900 border border-slate-300 bg-slate-50/50">
+                              {lineName}
+                            </td>
+                            <td colSpan={10} className="p-3 text-slate-400 italic text-xs border border-slate-300">
+                              No upcoming POs assigned yet. Click "Manage" to add upcoming POs.
+                            </td>
+                            <td className="p-3 text-center border border-slate-300">
+                              <button
+                                onClick={() => {
+                                  setEditingLine(lineName);
+                                  setLineModalSearch('');
+                                  setLineModalBuyerFilter('ALL');
+                                }}
+                                className="px-2.5 py-1 rounded bg-amber-500 text-slate-900 text-xs font-bold hover:bg-amber-400 cursor-pointer"
+                              >
+                                Manage
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      }
+
+                      return orders.map((order, oIdx) => {
+                        return (
+                          <tr key={`${lineName}_${oIdx}`} className={oIdx === 0 ? 'bg-amber-50/30' : 'hover:bg-slate-50'}>
+                            {oIdx === 0 && (
+                              <td 
+                                rowSpan={orders.length} 
+                                className="p-3 font-extrabold text-slate-900 border border-slate-300 bg-slate-50 align-top"
+                              >
+                                <div className="sticky top-2">
+                                  <span className="text-base font-extrabold block">{lineName}</span>
+                                  <span className="text-[11px] font-semibold text-slate-500 block mb-2">{orders.length}/5 POs</span>
+                                  <button
+                                    onClick={() => {
+                                      setEditingLine(lineName);
+                                      setLineModalSearch('');
+                                      setLineModalBuyerFilter('ALL');
+                                    }}
+                                    className="px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-900 text-xs font-bold cursor-pointer"
+                                  >
+                                    Manage Line
+                                  </button>
+                                </div>
+                              </td>
+                            )}
+
+                            <td className="p-3 text-xs font-bold border border-slate-300 whitespace-nowrap">
+                              <span className={`px-2 py-0.5 rounded ${oIdx === 0 ? 'bg-amber-600 text-white font-extrabold' : 'bg-slate-200 text-slate-800'}`}>
+                                #{oIdx + 1} {oIdx === 0 && '(Active)'}
+                              </span>
+                            </td>
+                            <td className="p-3 text-xs font-bold text-blue-800 border border-slate-300 whitespace-nowrap">
+                              {order._tabSource || '-'}
+                            </td>
+                            <td className="p-3 font-extrabold text-slate-900 border border-slate-300 whitespace-nowrap">
+                              {order['PO'] || '-'}
+                            </td>
+                            <td className="p-3 font-semibold text-slate-800 border border-slate-300">
+                              {order['STYLE'] || '-'}
+                            </td>
+                            <td className="p-3 text-slate-700 border border-slate-300">
+                              {order['ITEM'] || '-'}
+                            </td>
+                            <td className="p-3 font-bold text-indigo-700 border border-slate-300 whitespace-nowrap">
+                              {order['DZN'] || '-'}
+                            </td>
+                            <td className="p-3 text-slate-700 border border-slate-300 whitespace-nowrap">
+                              {order['SHIP DATE'] || '-'}
+                            </td>
+                            <td className="p-3 border border-slate-300">
+                              {getStatusPill(order['Fabric Update'])}
+                            </td>
+                            <td className="p-3 border border-slate-300">
+                              {getStatusPill(order['Sewing Acc. Update'])}
+                            </td>
+                            <td className="p-3 border border-slate-300">
+                              {getStatusPill(order['Finishing Acc. Update'])}
+                            </td>
+                            <td className="p-3 text-center border border-slate-300">
+                              <button
+                                onClick={() => removePoFromLine(lineName, order._uniqueKey)}
+                                className="p-1 rounded text-rose-500 hover:bg-rose-100 cursor-pointer"
+                                title="Remove from line"
+                              >
+                                <X size={15} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      });
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        /* STANDARD TABLE DASHBOARD (FOR ALL BUYERS & INDIVIDUAL BUYER TABS) */
+        <>
+          {/* Column Visibility Panel (Expandable) */}
+          {isColumnPanelOpen && (
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-blue-200 mb-6 transition-all">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-200 gap-2 mb-4">
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
+                    <SlidersHorizontal size={16} className="text-blue-600" />
+                    Column Visibility Manager
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Toggle checkmarks to show or hide specific columns in the table below.
+                  </p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={showAllColumns}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <Eye size={13} />
+                    Show All
+                  </button>
+                  <button
+                    onClick={hideAllColumns}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <EyeOff size={13} />
+                    Hide Extra
+                  </button>
+                  <button
+                    onClick={() => setHiddenColumns([])}
+                    className="px-3 py-1.5 text-xs font-semibold rounded-lg text-blue-600 hover:bg-blue-50 flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <RotateCcw size={13} />
+                    Reset
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
+                {allColumns.map(col => {
+                  const isVisible = !hiddenColumns.includes(col);
+                  const isStatus = isStatusColumn(col);
+                  return (
+                    <label
+                      key={col}
+                      className={`flex items-center gap-2 p-2.5 rounded-xl border text-xs font-medium cursor-pointer transition select-none ${
+                        isVisible
+                          ? 'bg-blue-50/70 border-blue-300 text-blue-900 font-semibold'
+                          : 'bg-slate-50 border-slate-200 text-slate-400 hover:border-slate-300'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={isVisible}
+                        onChange={() => toggleColumnVisibility(col)}
+                        className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4 border-slate-300"
+                      />
+                      <span className="truncate" title={col}>
+                        {col}
+                      </span>
+                      {isStatus && (
+                        <span className="ml-auto w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Status Column" />
+                      )}
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Table Container with FULL COMPLETE CELL BORDERS */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-300 overflow-hidden">
+            <div className="overflow-x-auto">
+              {isLoading ? (
+                <div className="py-20 text-center text-slate-500">
+                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent mb-3"></div>
+                  <p className="font-semibold text-sm">Loading data from Google Sheets...</p>
+                </div>
+              ) : visibleColumns.length === 0 ? (
+                <div className="py-16 text-center text-slate-500">
+                  <p className="text-sm font-semibold">All columns are hidden.</p>
+                  <button
+                    onClick={showAllColumns}
+                    className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-semibold cursor-pointer"
+                  >
+                    Restore Columns
+                  </button>
+                </div>
+              ) : (
+                <table className="w-full text-left border-collapse border border-slate-300">
+                  <thead>
+                    {/* Main Table Column Header */}
+                    <tr className="bg-slate-100 text-slate-800">
+                      {visibleColumns.map((col) => {
                         const isStatus = isStatusColumn(col);
                         const isRemark = col.toLowerCase().includes('remark');
                         const allowWrap = isStatus || isRemark;
-
                         return (
-                          <td 
+                          <th 
                             key={col} 
-                            className={`p-3 text-sm text-slate-800 border border-slate-300 ${
-                              allowWrap 
-                                ? 'whitespace-normal break-words min-w-[170px] max-w-[280px] align-top' 
-                                : 'whitespace-nowrap align-top'
-                            }`}
+                            className={`p-3.5 font-bold text-xs uppercase tracking-wider border border-slate-300 select-none ${
+                              col === 'Buyer Tab' ? 'bg-indigo-100 text-indigo-950 font-extrabold' : 'bg-slate-100'
+                            } ${allowWrap ? 'min-w-[170px] max-w-[280px]' : 'whitespace-nowrap'}`}
                           >
-                            {isStatus 
-                              ? getStatusPill(val) 
-                              : (val !== undefined && val !== null && val !== '' ? (
-                                  isRemark ? (
-                                    <div className="leading-relaxed text-slate-700 text-xs whitespace-pre-line break-words max-w-[260px]">
-                                      {val}
-                                    </div>
-                                  ) : val
-                                ) : '-')}
-                          </td>
+                            <div className="flex items-center justify-between gap-2">
+                              <span>{col}</span>
+                              {isStatus && (
+                                <span className="text-[10px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-normal normal-case">
+                                  status
+                                </span>
+                              )}
+                            </div>
+                          </th>
                         );
                       })}
                     </tr>
-                  ))
+
+                    {/* In-Header Filter Row */}
+                    {showHeaderFilterRow && (
+                      <tr className="bg-slate-50 border-b border-slate-300">
+                        {visibleColumns.map((col) => (
+                          <th key={`filter-${col}`} className="p-1.5 border border-slate-300 bg-slate-50">
+                            <input
+                              type="text"
+                              placeholder={`Filter ${col}...`}
+                              value={columnFilters[col] || ''}
+                              onChange={(e) => setColumnFilter(col, e.target.value)}
+                              className="w-full text-xs font-normal px-2 py-1 bg-white border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 focus:outline-none placeholder:text-slate-400"
+                            />
+                          </th>
+                        ))}
+                      </tr>
+                    )}
+                  </thead>
+
+                  <tbody>
+                    {currentRows.length === 0 ? (
+                      <tr>
+                        <td colSpan={visibleColumns.length} className="py-12 text-center text-slate-400 border border-slate-300">
+                          {isUniversalSearchActive 
+                            ? `No orders matching "${globalFilter}" found across all tabs.` 
+                            : 'No matching records found in this sheet.'}
+                        </td>
+                      </tr>
+                    ) : (
+                      currentRows.map((row, i) => (
+                        <tr 
+                          key={i} 
+                          className={`${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-blue-50/40 transition-colors`}
+                        >
+                          {visibleColumns.map((col) => {
+                            if (col === 'Buyer Tab') {
+                              return (
+                                <td key={col} className="p-3 text-xs font-bold text-indigo-800 bg-indigo-50/50 border border-slate-300 whitespace-nowrap align-top">
+                                  <span className="bg-indigo-100 px-2.5 py-1 rounded-md border border-indigo-200 inline-block">
+                                    {row._tabSource || activeTabName}
+                                  </span>
+                                </td>
+                              );
+                            }
+
+                            const val = row[col];
+                            const isStatus = isStatusColumn(col);
+                            const isRemark = col.toLowerCase().includes('remark');
+                            const allowWrap = isStatus || isRemark;
+
+                            return (
+                              <td 
+                                key={col} 
+                                className={`p-3 text-sm text-slate-800 border border-slate-300 ${
+                                  allowWrap 
+                                    ? 'whitespace-normal break-words min-w-[170px] max-w-[280px] align-top' 
+                                    : 'whitespace-nowrap align-top'
+                                }`}
+                              >
+                                {isStatus 
+                                  ? getStatusPill(val) 
+                                  : (val !== undefined && val !== null && val !== '' ? (
+                                      isRemark ? (
+                                        <div className="leading-relaxed text-slate-700 text-xs whitespace-pre-line break-words max-w-[260px]">
+                                          {val}
+                                        </div>
+                                      ) : val
+                                    ) : '-')}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              )}
+            </div>
+            
+            {/* Pagination & Row Counter */}
+            <div className="flex flex-col sm:flex-row items-center justify-between p-4 bg-slate-50 border-t border-slate-300 gap-3">
+              <p className="text-xs text-slate-600 font-medium">
+                Showing <span className="font-bold text-slate-900">{filteredData.length > 0 ? indexOfFirstRow + 1 : 0}</span> to{' '}
+                <span className="font-bold text-slate-900">{Math.min(indexOfLastRow, filteredData.length)}</span> of{' '}
+                <span className="font-bold text-slate-900">{filteredData.length}</span> rows
+                {isUniversalSearchActive && (
+                  <span className="ml-2 text-blue-700 font-semibold bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                    Across All Tabs
+                  </span>
                 )}
-              </tbody>
-            </table>
-          )}
-        </div>
-        
-        {/* Pagination & Row Counter */}
-        <div className="flex flex-col sm:flex-row items-center justify-between p-4 bg-slate-50 border-t border-slate-300 gap-3">
-          <p className="text-xs text-slate-600 font-medium">
-            Showing <span className="font-bold text-slate-900">{filteredData.length > 0 ? indexOfFirstRow + 1 : 0}</span> to{' '}
-            <span className="font-bold text-slate-900">{Math.min(indexOfLastRow, filteredData.length)}</span> of{' '}
-            <span className="font-bold text-slate-900">{filteredData.length}</span> rows
-            {isUniversalSearchActive && (
-              <span className="ml-2 text-blue-700 font-semibold bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                Across All Tabs
+              </p>
+
+              <div className="flex items-center space-x-2">
+                <button 
+                  className="flex items-center px-3.5 py-1.5 border border-slate-300 bg-white text-slate-700 text-xs font-bold rounded-lg shadow-2xs hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
+                  onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} 
+                  disabled={currentPage === 1}
+                >
+                  <ChevronLeft size={15} className="mr-1" />
+                  Previous
+                </button>
+
+                <span className="text-xs font-semibold text-slate-700 px-3 py-1 bg-white border border-slate-300 rounded-lg">
+                  {currentPage} / {totalPages}
+                </span>
+
+                <button 
+                  className="flex items-center px-3.5 py-1.5 border border-slate-300 bg-white text-slate-700 text-xs font-bold rounded-lg shadow-2xs hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
+                  onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))} 
+                  disabled={currentPage === totalPages}
+                >
+                  Next
+                  <ChevronRight size={15} className="ml-1" />
+                </button>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* ========================================================================= */}
+      {/* MODAL: ASSIGN / REORDER UP TO 5 POS FOR A SPECIFIC SEWING LINE */}
+      {/* ========================================================================= */}
+      {editingLine && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-3xl max-w-4xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden animate-fadeIn">
+            {/* Modal Header */}
+            <div className="p-5 bg-gradient-to-r from-slate-900 to-slate-800 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="h-10 w-10 rounded-2xl bg-amber-500/20 border border-amber-400 text-amber-300 flex items-center justify-center font-extrabold text-base">
+                  <Factory size={20} />
+                </div>
+                <div>
+                  <h3 className="font-extrabold text-lg text-white flex items-center gap-2">
+                    <span>Manage Upcoming POs: {editingLine}</span>
+                    <span className="text-xs bg-amber-500 text-slate-950 px-2 py-0.5 rounded-full font-bold">
+                      {(lineAllocations[editingLine] || []).length} / 5 Slots Filled
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Assign, prioritize and reorder the 5 upcoming POs for this sewing line.
+                  </p>
+                </div>
+              </div>
+
+              <button
+                onClick={() => setEditingLine(null)}
+                className="h-9 w-9 rounded-full bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center cursor-pointer transition"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 overflow-y-auto flex-1 space-y-6">
+              {/* Current 5 Assigned POs Queue */}
+              <div>
+                <h4 className="font-extrabold text-sm text-slate-800 uppercase tracking-wider mb-3 flex items-center justify-between">
+                  <span>Current 5 PO Queue for {editingLine}</span>
+                  <span className="text-xs font-semibold text-slate-500 normal-case">
+                    Drag / Click arrows to reorder queue
+                  </span>
+                </h4>
+
+                <div className="space-y-2.5">
+                  {(lineAllocations[editingLine] || []).length === 0 ? (
+                    <div className="p-4 rounded-xl border border-dashed border-slate-300 text-center text-xs text-slate-500">
+                      No POs assigned to {editingLine} yet. Select from the available list below!
+                    </div>
+                  ) : (
+                    (lineAllocations[editingLine] || []).map((orderKey, idx) => {
+                      const order = ordersByKey.get(orderKey);
+                      if (!order) return null;
+                      const readiness = checkOrderReadiness(order);
+                      const isNext = idx === 0;
+
+                      return (
+                        <div 
+                          key={orderKey}
+                          className={`p-3 rounded-2xl border flex items-center justify-between gap-3 ${
+                            isNext ? 'bg-amber-50/70 border-amber-300 ring-1 ring-amber-300' : 'bg-slate-50 border-slate-200'
+                          }`}
+                        >
+                          <div className="flex items-center gap-3">
+                            <span className={`h-7 w-7 rounded-lg font-extrabold text-xs flex items-center justify-center shrink-0 ${
+                              isNext ? 'bg-amber-600 text-white' : 'bg-slate-200 text-slate-700'
+                            }`}>
+                              #{idx + 1}
+                            </span>
+
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="font-extrabold text-slate-900 text-sm">PO #{order['PO']}</span>
+                                <span className="text-xs font-bold px-2 py-0.5 rounded bg-blue-100 text-blue-800">
+                                  {order._tabSource}
+                                </span>
+                                {isNext && (
+                                  <span className="text-[10px] font-extrabold px-1.5 py-0.5 rounded bg-amber-600 text-white">
+                                    CURRENT RUNNING
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs text-slate-600 mt-0.5">
+                                Style: <strong>{order['STYLE']}</strong> • Item: {order['ITEM']} • {order['DZN']} DZN • Ship: {order['SHIP DATE']}
+                              </p>
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            {/* Material pill preview */}
+                            <div className="hidden sm:flex items-center gap-1 text-[10px] font-bold">
+                              <span className={`px-1.5 py-0.5 rounded ${readiness.fabricOk ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                                Fab: {readiness.fabricOk ? 'OK' : 'Pending'}
+                              </span>
+                              <span className={`px-1.5 py-0.5 rounded ${readiness.sewingOk ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                                Sew: {readiness.sewingOk ? 'OK' : 'Pending'}
+                              </span>
+                              <span className={`px-1.5 py-0.5 rounded ${readiness.finishingOk ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'}`}>
+                                Fin: {readiness.finishingOk ? 'OK' : 'Pending'}
+                              </span>
+                            </div>
+
+                            {/* Move Up / Down */}
+                            <div className="flex items-center gap-1">
+                              <button
+                                disabled={idx === 0}
+                                onClick={() => movePoInLine(editingLine, idx, 'up')}
+                                className="p-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 disabled:opacity-30 cursor-pointer"
+                                title="Move up"
+                              >
+                                <ArrowUp size={14} />
+                              </button>
+                              <button
+                                disabled={idx === (lineAllocations[editingLine] || []).length - 1}
+                                onClick={() => movePoInLine(editingLine, idx, 'down')}
+                                className="p-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-100 disabled:opacity-30 cursor-pointer"
+                                title="Move down"
+                              >
+                                <ArrowDown size={14} />
+                              </button>
+                            </div>
+
+                            {/* Remove button */}
+                            <button
+                              onClick={() => removePoFromLine(editingLine, orderKey)}
+                              className="p-1.5 rounded-lg bg-rose-50 text-rose-700 hover:bg-rose-100 border border-rose-200 cursor-pointer"
+                              title="Remove PO from line"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* Add More POs to this Line */}
+              <div className="pt-4 border-t border-slate-200">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+                  <h4 className="font-extrabold text-sm text-slate-800 uppercase tracking-wider">
+                    Add PO to {editingLine} (Available from Store Sheets)
+                  </h4>
+                  <div className="flex items-center gap-2">
+                    <select
+                      value={lineModalBuyerFilter}
+                      onChange={(e) => setLineModalBuyerFilter(e.target.value)}
+                      className="text-xs bg-slate-50 border border-slate-300 rounded-lg p-1.5 font-medium outline-none"
+                    >
+                      <option value="ALL">All Buyers</option>
+                      {tabs.map(t => (
+                        <option key={t.name} value={t.name}>{t.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                {/* Filter search in modal */}
+                <div className="relative mb-3">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
+                  <input
+                    type="text"
+                    value={lineModalSearch}
+                    onChange={(e) => setLineModalSearch(e.target.value)}
+                    placeholder="Search by PO number, style, or item..."
+                    className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-300 rounded-xl focus:bg-white focus:ring-1 focus:ring-blue-500 outline-none"
+                  />
+                </div>
+
+                {/* List of Available Orders */}
+                <div className="max-h-60 overflow-y-auto space-y-2 border border-slate-200 rounded-2xl p-2 bg-slate-50/50">
+                  {allMasterOrders
+                    .filter(order => {
+                      if (!order['PO']) return false;
+                      // Filter by buyer tab if selected
+                      if (lineModalBuyerFilter !== 'ALL' && order._tabSource !== lineModalBuyerFilter) {
+                        return false;
+                      }
+                      // Filter by search query
+                      if (lineModalSearch.trim()) {
+                        const q = lineModalSearch.toLowerCase();
+                        const match = 
+                          String(order['PO'] || '').toLowerCase().includes(q) ||
+                          String(order['STYLE'] || '').toLowerCase().includes(q) ||
+                          String(order['ITEM'] || '').toLowerCase().includes(q) ||
+                          String(order._tabSource || '').toLowerCase().includes(q);
+                        if (!match) return false;
+                      }
+                      return true;
+                    })
+                    .slice(0, 40)
+                    .map(order => {
+                      const alreadyInThisLine = (lineAllocations[editingLine] || []).includes(order._uniqueKey);
+                      const isLineFull = (lineAllocations[editingLine] || []).length >= 5;
+                      const readiness = checkOrderReadiness(order);
+
+                      return (
+                        <div 
+                          key={order._uniqueKey} 
+                          className="bg-white p-2.5 rounded-xl border border-slate-200 flex items-center justify-between gap-2 text-xs hover:border-slate-300"
+                        >
+                          <div>
+                            <div className="flex items-center gap-1.5">
+                              <span className="font-extrabold text-slate-900">PO #{order['PO']}</span>
+                              <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-slate-100 text-slate-700">
+                                {order._tabSource}
+                              </span>
+                              <span className="text-slate-500 font-medium">Style: {order['STYLE']}</span>
+                            </div>
+                            <p className="text-[11px] text-slate-500 mt-0.5">
+                              {order['ITEM']} • {order['DZN']} Dzn • Ship: {order['SHIP DATE']}
+                            </p>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                              readiness.isReady ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'
+                            }`}>
+                              {readiness.isReady ? 'Ready' : 'Pending'}
+                            </span>
+
+                            {alreadyInThisLine ? (
+                              <button
+                                onClick={() => removePoFromLine(editingLine, order._uniqueKey)}
+                                className="px-2.5 py-1 rounded-lg bg-rose-50 text-rose-700 font-bold text-xs hover:bg-rose-100 border border-rose-200 cursor-pointer"
+                              >
+                                Remove
+                              </button>
+                            ) : (
+                              <button
+                                disabled={isLineFull}
+                                onClick={() => addPoToLine(editingLine, order._uniqueKey)}
+                                className="px-3 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer flex items-center gap-1 transition shadow-2xs"
+                              >
+                                <Plus size={13} />
+                                <span>Add to Line</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-50 border-t border-slate-200 flex items-center justify-between">
+              <span className="text-xs text-slate-500">
+                Changes are automatically saved to your dashboard!
               </span>
-            )}
-          </p>
-
-          <div className="flex items-center space-x-2">
-            <button 
-              className="flex items-center px-3.5 py-1.5 border border-slate-300 bg-white text-slate-700 text-xs font-bold rounded-lg shadow-2xs hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
-              onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} 
-              disabled={currentPage === 1}
-            >
-              <ChevronLeft size={15} className="mr-1" />
-              Previous
-            </button>
-
-            <span className="text-xs font-semibold text-slate-700 px-3 py-1 bg-white border border-slate-300 rounded-lg">
-              {currentPage} / {totalPages}
-            </span>
-
-            <button 
-              className="flex items-center px-3.5 py-1.5 border border-slate-300 bg-white text-slate-700 text-xs font-bold rounded-lg shadow-2xs hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
-              onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))} 
-              disabled={currentPage === totalPages}
-            >
-              Next
-              <ChevronRight size={15} className="ml-1" />
-            </button>
+              <button
+                onClick={() => setEditingLine(null)}
+                className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl transition cursor-pointer"
+              >
+                Done
+              </button>
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       {/* Footer Credit */}
       <footer className="mt-12 pt-6 pb-6 border-t border-slate-200 text-center">
@@ -906,4 +1877,3 @@ export default function App() {
     </div>
   );
 }
-
