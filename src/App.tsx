@@ -1771,11 +1771,6 @@ export default function App() {
                 />
               </div>
 
-              <div className="p-2.5 bg-slate-100 rounded-xl border border-slate-200 text-[11px] text-slate-600 space-y-0.5">
-                <span className="font-bold text-slate-800 block">Default Credentials:</span>
-                <div>Username: <code className="font-mono font-bold text-blue-700">planner</code> or <code className="font-mono font-bold text-blue-700">store</code></div>
-                <div>Password: <code className="font-mono font-bold text-blue-700">felix123</code></div>
-              </div>
 
               <div className="pt-2 flex items-center justify-end gap-2.5">
                 <button
