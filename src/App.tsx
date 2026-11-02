@@ -58,6 +58,9 @@ const INITIAL_TABS: TabItem[] = [
 const TOTAL_SEWING_LINES = 15;
 const ALL_LINE_NAMES = Array.from({ length: TOTAL_SEWING_LINES }, (_, i) => `Line ${String(i + 1).padStart(2, '0')}`);
 const LINE_ALLOCATION_STORAGE_KEY = 'felix_sewing_line_allocations_v1';
+const TABS_DATA_CACHE_KEY = 'felix_tabs_data_cache_v3';
+const TABS_LIST_CACHE_KEY = 'felix_tabs_list_cache_v3';
+const LAST_SYNC_CACHE_KEY = 'felix_last_sync_time_v3';
 
 // Canonical column name normalizer to unify case differences across different buyer tabs
 const normalizeHeader = (rawKey: string): string | null => {
@@ -103,9 +106,36 @@ const getOrderRowKey = (row: any, index: number): string => {
 };
 
 export default function App() {
-  const [tabs, setTabs] = useState<TabItem[]>(INITIAL_TABS);
+  const [tabs, setTabs] = useState<TabItem[]>(() => {
+    try {
+      const cached = localStorage.getItem(TABS_LIST_CACHE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+      }
+    } catch (e) {
+      console.warn('Failed to parse cached tabs list', e);
+    }
+    return INITIAL_TABS;
+  });
+
   // Store data for all tabs in a map: tabName -> rows[]
-  const [tabsData, setTabsData] = useState<Record<string, any[]>>({});
+  // Instantly hydrated from localStorage so user never waits with 0 orders or hidden columns!
+  const [tabsData, setTabsData] = useState<Record<string, any[]>>(() => {
+    try {
+      const cached = localStorage.getItem(TABS_DATA_CACHE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && typeof parsed === 'object' && Object.keys(parsed).length > 0) {
+          return parsed;
+        }
+      }
+    } catch (e) {
+      console.warn('Failed to parse cached tabs data', e);
+    }
+    return {};
+  });
+
   // activeTabName: can be a specific buyer tab name, '__ALL__', or '__LINE_WISE__'
   const [activeTabName, setActiveTabName] = useState<string>('__LINE_WISE__');
   const [globalFilter, setGlobalFilter] = useState('');
@@ -117,7 +147,18 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isAutoRefreshEnabled, setIsAutoRefreshEnabled] = useState(true);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(() => {
+    try {
+      const cached = localStorage.getItem(LAST_SYNC_CACHE_KEY);
+      if (cached) {
+        const d = new Date(cached);
+        if (!isNaN(d.getTime())) return d;
+      }
+    } catch (e) {
+      console.warn('Failed to parse last sync time', e);
+    }
+    return null;
+  });
   const [syncNotice, setSyncNotice] = useState<string | null>(null);
   const rowsPerPage = 12;
 
@@ -204,10 +245,46 @@ export default function App() {
     }
   }, [lineAllocations]);
 
-  // 1. Discover tabs and GIDs dynamically from pubhtml
+  // Persist tabsData to localStorage for instant 0ms startup
+  useEffect(() => {
+    try {
+      if (tabsData && Object.keys(tabsData).length > 0) {
+        localStorage.setItem(TABS_DATA_CACHE_KEY, JSON.stringify(tabsData));
+      }
+    } catch (e) {
+      console.warn('Failed to cache tabsData', e);
+    }
+  }, [tabsData]);
+
+  // Persist tab list
+  useEffect(() => {
+    try {
+      if (tabs && tabs.length > 0) {
+        localStorage.setItem(TABS_LIST_CACHE_KEY, JSON.stringify(tabs));
+      }
+    } catch (e) {
+      console.warn('Failed to cache tabs list', e);
+    }
+  }, [tabs]);
+
+  // Persist last sync time
+  useEffect(() => {
+    try {
+      if (lastUpdated) {
+        localStorage.setItem(LAST_SYNC_CACHE_KEY, lastUpdated.toISOString());
+      }
+    } catch (e) {
+      console.warn('Failed to cache last sync time', e);
+    }
+  }, [lastUpdated]);
+
+  // 1. Discover tabs and GIDs dynamically from pubhtml (non-blocking)
   const discoverTabs = useCallback(async (): Promise<TabItem[]> => {
     try {
-      const res = await fetch(PUBHTML_URL);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 7000);
+      const res = await fetch(PUBHTML_URL, { signal: controller.signal });
+      clearTimeout(timeoutId);
       if (!res.ok) return tabs;
       const html = await res.text();
       
@@ -239,56 +316,72 @@ export default function App() {
     return tabs;
   }, [tabs]);
 
-  // Helper to fetch and parse a single tab's CSV
+  // Helper to fetch and parse a single tab's CSV with fast timeout protection
   const parseSingleTab = async (tabItem: TabItem): Promise<any[]> => {
     const csvUrl = `${PUB_BASE}/pub?gid=${tabItem.gid}&single=true&output=csv`;
-    const response = await fetch(csvUrl);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status} on tab ${tabItem.name}`);
-    }
-    const csvText = await response.text();
-    const trimmed = csvText.trim();
-    if (trimmed.startsWith('<!DOCTYPE html') || trimmed.startsWith('<html')) {
-      throw new Error(`Google Sheet returned temporary HTML for ${tabItem.name}`);
-    }
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 8500);
 
-    return new Promise((resolve) => {
-      Papa.parse(csvText, {
-        header: true,
-        skipEmptyLines: 'greedy',
-        complete: (results) => {
-          if (!results.data || !Array.isArray(results.data)) {
-            resolve([]);
-            return;
-          }
-          const cleaned = (results.data as any[]).map((row, idx) => {
-            if (!row || typeof row !== 'object') return null;
-            const newRow: any = { _tabSource: tabItem.name };
-            Object.keys(row).forEach(key => {
-              const normKey = normalizeHeader(key);
-              if (normKey) {
-                const cellVal = row[key];
-                if (newRow[normKey] === undefined || newRow[normKey] === '') {
-                  newRow[normKey] = typeof cellVal === 'string' ? cellVal.trim() : cellVal;
+    try {
+      const response = await fetch(csvUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status} on tab ${tabItem.name}`);
+      }
+      const csvText = await response.text();
+      const trimmed = csvText.trim();
+      if (trimmed.startsWith('<!DOCTYPE html') || trimmed.startsWith('<html')) {
+        throw new Error(`Google Sheet returned temporary HTML for ${tabItem.name}`);
+      }
+
+      return new Promise((resolve) => {
+        Papa.parse(csvText, {
+          header: true,
+          skipEmptyLines: 'greedy',
+          complete: (results) => {
+            if (!results.data || !Array.isArray(results.data)) {
+              resolve([]);
+              return;
+            }
+            const cleaned = (results.data as any[]).map((row, idx) => {
+              if (!row || typeof row !== 'object') return null;
+              const newRow: any = { _tabSource: tabItem.name };
+              Object.keys(row).forEach(key => {
+                const normKey = normalizeHeader(key);
+                if (normKey) {
+                  const cellVal = row[key];
+                  if (newRow[normKey] === undefined || newRow[normKey] === '') {
+                    newRow[normKey] = typeof cellVal === 'string' ? cellVal.trim() : cellVal;
+                  }
                 }
-              }
-            });
-            // Assign a unique row ID for line allocation
-            newRow._uniqueKey = getOrderRowKey(newRow, idx);
-            return newRow;
-          }).filter(row => row && Object.values(row).some(v => v !== undefined && v !== null && v !== '' && v !== row._tabSource));
-          resolve(cleaned);
-        },
-        error: () => resolve([])
+              });
+              // Assign a unique row ID for line allocation
+              newRow._uniqueKey = getOrderRowKey(newRow, idx);
+              return newRow;
+            }).filter(row => row && Object.values(row).some(v => v !== undefined && v !== null && v !== '' && v !== row._tabSource));
+            resolve(cleaned);
+          },
+          error: () => resolve([])
+        });
       });
-    });
+    } catch (err) {
+      clearTimeout(timeoutId);
+      throw err;
+    }
   };
 
-  // Fetch all tabs in parallel so universal search & line assignment have full data
-  const fetchAllTabs = useCallback(async (tabList: TabItem[], isSilent = false) => {
+  // Fetch all tabs in parallel with Stale-While-Revalidate:
+  // Never unmount or blank out existing data while fetching!
+  const fetchAllTabs = useCallback(async (tabList: TabItem[], isUserTriggered = false) => {
     if (!tabList || tabList.length === 0) return;
 
-    if (!isSilent) setIsLoading(true);
+    // Only display full loading screen if we literally have zero cached rows
+    setIsLoading(prevLoading => {
+      const hasAnyRows = Object.keys(tabsData).length > 0;
+      if (!hasAnyRows) return true;
+      return false;
+    });
+
     setIsRefreshing(true);
 
     try {
@@ -299,15 +392,16 @@ export default function App() {
         })
       );
 
-      const newMap: Record<string, any[]> = {};
+      const successfulMap: Record<string, any[]> = {};
       results.forEach(res => {
-        if (res.status === 'fulfilled') {
-          newMap[res.value.name] = res.value.rows;
+        if (res.status === 'fulfilled' && res.value.rows && res.value.rows.length > 0) {
+          successfulMap[res.value.name] = res.value.rows;
         }
       });
 
-      if (Object.keys(newMap).length > 0) {
-        setTabsData(prev => ({ ...prev, ...newMap }));
+      // Keep existing data for any tab that failed or was slow; only merge fresh successful data
+      if (Object.keys(successfulMap).length > 0) {
+        setTabsData(prev => ({ ...prev, ...successfulMap }));
         setLastUpdated(new Date());
         setSyncNotice(null);
       }
@@ -318,14 +412,23 @@ export default function App() {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, []);
+  }, [tabsData]);
 
-  // Initial load
+  // Initial load: Instant cached view + immediate parallel background revalidation
   useEffect(() => {
-    (async () => {
-      const freshTabs = await discoverTabs();
-      await fetchAllTabs(freshTabs, false);
-    })();
+    // 1. Instantly trigger parallel CSV downloads
+    fetchAllTabs(tabs, false);
+
+    // 2. Concurrently check pubhtml for newly added tabs or changed GIDs in background
+    discoverTabs().then(freshTabs => {
+      const hasDifferences = freshTabs.length !== tabs.length || 
+        freshTabs.some(ft => !tabs.some(t => t.gid === ft.gid && t.name === ft.name));
+      if (hasDifferences) {
+        fetchAllTabs(freshTabs, false);
+      }
+    }).catch(err => {
+      console.warn('Background discovery check:', err);
+    });
   }, []);
 
   // Background Auto-Sync every 25 seconds
@@ -759,23 +862,30 @@ export default function App() {
 
           <span className="text-slate-300">•</span>
 
-          <div>
-            Last live sync:{' '}
+          <div className="flex items-center gap-1.5">
+            <span>Last live sync:</span>
             <span className="font-semibold text-slate-700">
               {lastUpdated ? lastUpdated.toLocaleTimeString() : 'Connecting...'}
             </span>
+            {isRefreshing && (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
+                <RefreshCw size={10} className="animate-spin text-blue-600" />
+                <span>Syncing live...</span>
+              </span>
+            )}
           </div>
 
           <span className="text-slate-300">•</span>
 
           <button
             onClick={() => {
-              discoverTabs().then(freshTabs => fetchAllTabs(freshTabs, false));
+              fetchAllTabs(tabs, false);
             }}
             disabled={isRefreshing}
             className="flex items-center gap-1 font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-md transition cursor-pointer disabled:opacity-50"
+            title="Update all buyer orders from Google Sheets immediately"
           >
-            <RefreshCw size={12} className={isRefreshing ? 'animate-spin' : ''} />
+            <RefreshCw size={12} className={isRefreshing ? 'animate-spin text-blue-600' : ''} />
             <span>{isRefreshing ? 'Syncing...' : 'Refresh Now'}</span>
           </button>
         </div>
@@ -1627,17 +1737,24 @@ export default function App() {
           {/* Table Container with FULL COMPLETE CELL BORDERS */}
           <div className="bg-white rounded-2xl shadow-sm border border-slate-300 overflow-hidden">
             <div className="overflow-x-auto">
-              {isLoading ? (
+              {isLoading && baseData.length === 0 ? (
                 <div className="py-20 text-center text-slate-500">
                   <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent mb-3"></div>
-                  <p className="font-semibold text-sm">Loading data from Google Sheets...</p>
+                  <p className="font-semibold text-sm">Connecting & loading data from Google Sheets...</p>
+                  <p className="text-xs text-slate-400 mt-1">First-time load will finish in a few seconds</p>
                 </div>
-              ) : visibleColumns.length === 0 ? (
+              ) : allColumns.length === 0 && baseData.length === 0 ? (
+                <div className="py-20 text-center text-slate-500">
+                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent mb-3"></div>
+                  <p className="font-semibold text-sm">Syncing orders for {activeTabName === '__ALL__' ? 'All Combined' : activeTabName}...</p>
+                  <p className="text-xs text-slate-400 mt-1">Data will appear automatically in a moment</p>
+                </div>
+              ) : allColumns.length > 0 && visibleColumns.length === 0 ? (
                 <div className="py-16 text-center text-slate-500">
-                  <p className="text-sm font-semibold">All columns are hidden.</p>
+                  <p className="text-sm font-semibold">All columns are hidden by column filter.</p>
                   <button
                     onClick={showAllColumns}
-                    className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-lg text-xs font-semibold cursor-pointer"
+                    className="mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold cursor-pointer shadow-sm transition"
                   >
                     Restore Columns
                   </button>
