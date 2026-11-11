@@ -725,13 +725,29 @@ export default function App() {
     );
   };
 
-  const checkOrderReadiness = (order: any): { isReady: boolean; fabricOk: boolean; sewingOk: boolean; finishingOk: boolean } => {
-    if (!order) return { isReady: false, fabricOk: false, sewingOk: false, finishingOk: false };
-    const fabricOk = String(order['Fabric Update'] || order['Fabric'] || '').toLowerCase().trim() === 'ok';
-    const sewingOk = String(order['Sewing Acc. Update'] || order['Sewing'] || order['sewing Acc'] || '').toLowerCase().trim() === 'ok';
-    const finishingOk = String(order['Finishing Acc. Update'] || order['Finishing'] || order['Finishing accessories'] || '').toLowerCase().trim() === 'ok';
+  const checkOrderReadiness = (order: any): { 
+    isReady: boolean; 
+    isReadyForSewing: boolean; 
+    isFullMaterialReady: boolean; 
+    fabricOk: boolean; 
+    sewingOk: boolean; 
+    finishingOk: boolean 
+  } => {
+    if (!order) return { isReady: false, isReadyForSewing: false, isFullMaterialReady: false, fabricOk: false, sewingOk: false, finishingOk: false };
+    const isValOk = (val: any) => {
+      const s = String(val || '').toLowerCase().trim();
+      return s === 'ok' || s === 'ok.' || s === 'done' || s === 'yes' || s === 'received' || s.startsWith('ok ');
+    };
+    const fabricOk = isValOk(order['Fabric Update'] || order['Fabric']);
+    const sewingOk = isValOk(order['Sewing Acc. Update'] || order['Sewing'] || order['sewing Acc']);
+    const finishingOk = isValOk(order['Finishing Acc. Update'] || order['Finishing'] || order['Finishing accessories']);
+    
+    // For Sewing planning: Fabric + Sewing Accessories OK means Ready for Sewing!
+    const isReadyForSewing = fabricOk && sewingOk;
     return {
-      isReady: fabricOk && sewingOk && finishingOk,
+      isReady: isReadyForSewing,
+      isReadyForSewing,
+      isFullMaterialReady: fabricOk && sewingOk && finishingOk,
       fabricOk,
       sewingOk,
       finishingOk
@@ -937,15 +953,15 @@ export default function App() {
 
             <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
               <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">100% Material Ready</p>
+                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Ready for Sewing</p>
                 <p className="text-2xl font-extrabold text-emerald-700 mt-1">
                   {lineMetrics.totalReadyPos}{' '}
                   <span className="text-sm font-bold text-slate-500">({lineMetrics.readyPercentage}%)</span>
                 </p>
-                <p className="text-[11px] text-slate-500 mt-0.5">Fabric, Sewing & Finishing OK</p>
+                <p className="text-[11px] text-slate-500 mt-0.5">Fabric & Sewing Acc. OK</p>
               </div>
               <div className="h-12 w-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-xl border border-emerald-100">
-                ✅
+                🧵
               </div>
             </div>
 
@@ -1473,14 +1489,14 @@ export default function App() {
                             {/* Material Status Badges in Outline Style */}
                             <div className="pt-2 border-t border-slate-200">
                               <div className="flex items-center justify-between mb-1.5">
-                                <span className="text-slate-500 text-[10px] font-extrabold uppercase tracking-wider">Materials Status</span>
+                                <span className="text-slate-500 text-[10px] font-extrabold uppercase tracking-wider">Sewing Readiness</span>
                                 {readiness.isReady ? (
-                                  <span className="text-[10px] font-black border border-emerald-600 bg-emerald-50 text-emerald-800 px-2 py-0.5 rounded-full flex items-center gap-1">
+                                  <span className="text-[10px] font-black border border-emerald-600 bg-emerald-50 text-emerald-800 px-2.5 py-0.5 rounded-full flex items-center gap-1 shadow-2xs">
                                     <CheckCircle2 size={11} className="text-emerald-600" />
-                                    READY
+                                    READY FOR SEWING
                                   </span>
                                 ) : (
-                                  <span className="text-[10px] font-black border border-amber-500 bg-amber-50 text-amber-800 px-2 py-0.5 rounded-full flex items-center gap-1">
+                                  <span className="text-[10px] font-black border border-amber-500 bg-amber-50 text-amber-800 px-2.5 py-0.5 rounded-full flex items-center gap-1">
                                     <AlertCircle size={11} className="text-amber-600" />
                                     PENDING
                                   </span>
@@ -1541,7 +1557,7 @@ export default function App() {
                       <th className="p-3 border border-slate-300">Queue #</th>
                       <th className="p-3 border border-slate-300">Buyer Tab</th>
                       <th className="p-3 border border-slate-300">PO Number</th>
-                      <th className="p-3 border border-slate-300">Style</th>
+                      <th className="p-3 border border-slate-300">Style / File No</th>
                       <th className="p-3 border border-slate-300">Item</th>
                       <th className="p-3 border border-slate-300">DZN</th>
                       <th className="p-3 border border-slate-300">Ship Date</th>
@@ -1584,6 +1600,7 @@ export default function App() {
                       }
 
                       return orders.map((order, oIdx) => {
+                        const readiness = checkOrderReadiness(order);
                         return (
                           <tr key={`${lineName}_${oIdx}`} className={oIdx === 0 ? 'bg-amber-50/30' : 'hover:bg-slate-50'}>
                             {oIdx === 0 && (
@@ -1611,9 +1628,22 @@ export default function App() {
                             )}
 
                             <td className="p-3 text-xs font-bold border border-slate-300 whitespace-nowrap">
-                              <span className={`px-2 py-0.5 rounded ${oIdx === 0 ? 'bg-amber-600 text-white font-extrabold' : 'bg-slate-200 text-slate-800'}`}>
-                                #{oIdx + 1} {oIdx === 0 && '(Active)'}
-                              </span>
+                              <div className="flex flex-col gap-1 items-start">
+                                <span className={`px-2 py-0.5 rounded ${oIdx === 0 ? 'bg-amber-600 text-white font-extrabold' : 'bg-slate-200 text-slate-800'}`}>
+                                  #{oIdx + 1} {oIdx === 0 && '(Active)'}
+                                </span>
+                                {readiness.isReady ? (
+                                  <span className="text-[10px] font-black text-emerald-800 bg-emerald-100 border border-emerald-300 px-1.5 py-0.5 rounded whitespace-nowrap flex items-center gap-1 shadow-2xs">
+                                    <CheckCircle2 size={10} className="text-emerald-600 shrink-0" />
+                                    Ready for Sewing
+                                  </span>
+                                ) : (
+                                  <span className="text-[10px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded whitespace-nowrap flex items-center gap-1">
+                                    <AlertCircle size={10} className="text-amber-600 shrink-0" />
+                                    Pending
+                                  </span>
+                                )}
+                              </div>
                             </td>
                             <td className="p-3 text-xs font-bold text-blue-800 border border-slate-300 whitespace-nowrap">
                               {order._tabSource || '-'}
@@ -1621,8 +1651,16 @@ export default function App() {
                             <td className="p-3 font-extrabold text-slate-900 border border-slate-300 whitespace-nowrap">
                               {order['PO'] || '-'}
                             </td>
-                            <td className="p-3 font-semibold text-slate-800 border border-slate-300">
-                              {order['STYLE'] || '-'}
+                            <td className="p-3 border border-slate-300">
+                              <div className="font-bold text-slate-900 leading-tight">
+                                {order['STYLE'] || '-'}
+                              </div>
+                              {order['File No'] && (
+                                <div className="text-[11px] font-semibold text-slate-600 mt-1 flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 w-fit">
+                                  <span className="text-slate-400 font-normal">File:</span>
+                                  <span className="text-slate-800 font-bold">{order['File No']}</span>
+                                </div>
+                              )}
                             </td>
                             <td className="p-3 text-slate-700 border border-slate-300">
                               {order['ITEM'] || '-'}
@@ -2197,6 +2235,7 @@ export default function App() {
                         const match = 
                           String(order['PO'] || '').toLowerCase().includes(q) ||
                           String(order['STYLE'] || '').toLowerCase().includes(q) ||
+                          String(order['File No'] || '').toLowerCase().includes(q) ||
                           String(order['ITEM'] || '').toLowerCase().includes(q) ||
                           String(order._tabSource || '').toLowerCase().includes(q);
                         if (!match) return false;
@@ -2215,12 +2254,17 @@ export default function App() {
                           className="bg-white p-2.5 rounded-xl border border-slate-200 flex items-center justify-between gap-2 text-xs hover:border-slate-300"
                         >
                           <div>
-                            <div className="flex items-center gap-1.5">
+                            <div className="flex items-center gap-1.5 flex-wrap">
                               <span className="font-extrabold text-slate-900">PO #{order['PO']}</span>
                               <span className="text-[10px] font-bold px-1.5 py-0.2 rounded bg-slate-100 text-slate-700">
                                 {order._tabSource}
                               </span>
-                              <span className="text-slate-500 font-medium">Style: {order['STYLE']}</span>
+                              <span className="text-slate-800 font-bold">Style: {order['STYLE']}</span>
+                              {order['File No'] && (
+                                <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded font-semibold border border-slate-200">
+                                  File: {order['File No']}
+                                </span>
+                              )}
                             </div>
                             <p className="text-[11px] text-slate-500 mt-0.5">
                               {order['ITEM']} • {order['DZN']} Dzn • Ship: {order['SHIP DATE']}
@@ -2228,10 +2272,10 @@ export default function App() {
                           </div>
 
                           <div className="flex items-center gap-2">
-                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                              readiness.isReady ? 'bg-emerald-100 text-emerald-800' : 'bg-slate-100 text-slate-600'
+                            <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full whitespace-nowrap ${
+                              readiness.isReady ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' : 'bg-slate-100 text-slate-600'
                             }`}>
-                              {readiness.isReady ? 'Ready' : 'Pending'}
+                              {readiness.isReady ? 'Ready for Sewing' : 'Pending'}
                             </span>
 
                             {alreadyInThisLine ? (
