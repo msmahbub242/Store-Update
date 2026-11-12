@@ -46,21 +46,21 @@ interface TabItem {
 }
 
 const INITIAL_TABS: TabItem[] = [
-  { name: 'LC WAIKIKI(Tariq sir)', gid: '951520833' },
-  { name: 'BR sujoy', gid: '1524254458' },
-  { name: 'BR Fahim', gid: '1304576963' },
-  { name: 'Monoprix', gid: '793642162' },
-  { name: 'TESCO', gid: '1101532121' },
-  { name: 'OVS', gid: '1369675807' },
-  { name: 'Madam', gid: '1025651909' },
+  { name: 'LC WAIKIKI(Tariq sir)', gid: '1785194325' },
+  { name: 'BR sujoy', gid: '868605940' },
+  { name: 'BR Fahim', gid: '890569167' },
+  { name: 'Monoprix', gid: '871467747' },
+  { name: 'TESCO', gid: '613580876' },
+  { name: 'OVS', gid: '574564189' },
+  { name: 'Madam', gid: '1331640924' },
 ];
 
 const TOTAL_SEWING_LINES = 15;
 const ALL_LINE_NAMES = Array.from({ length: TOTAL_SEWING_LINES }, (_, i) => `Line ${String(i + 1).padStart(2, '0')}`);
 const LINE_ALLOCATION_STORAGE_KEY = 'felix_sewing_line_allocations_v1';
-const TABS_DATA_CACHE_KEY = 'felix_tabs_data_cache_v3';
-const TABS_LIST_CACHE_KEY = 'felix_tabs_list_cache_v3';
-const LAST_SYNC_CACHE_KEY = 'felix_last_sync_time_v3';
+const TABS_DATA_CACHE_KEY = 'felix_tabs_data_cache_v4';
+const TABS_LIST_CACHE_KEY = 'felix_tabs_list_cache_v4';
+const LAST_SYNC_CACHE_KEY = 'felix_last_sync_time_v4';
 
 // Canonical column name normalizer to unify case differences across different buyer tabs
 const normalizeHeader = (rawKey: string): string | null => {
@@ -278,12 +278,20 @@ export default function App() {
     }
   }, [lastUpdated]);
 
-  // 1. Discover tabs and GIDs dynamically from pubhtml (non-blocking)
+  // 1. Discover tabs and GIDs dynamically from pubhtml (with cache-busting & non-blocking timeout)
   const discoverTabs = useCallback(async (): Promise<TabItem[]> => {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 7000);
-      const res = await fetch(PUBHTML_URL, { signal: controller.signal });
+      const bustUrl = `${PUBHTML_URL}?_cb=${Date.now()}`;
+      const res = await fetch(bustUrl, { 
+        signal: controller.signal,
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache'
+        }
+      });
       clearTimeout(timeoutId);
       if (!res.ok) return tabs;
       const html = await res.text();
@@ -316,14 +324,22 @@ export default function App() {
     return tabs;
   }, [tabs]);
 
-  // Helper to fetch and parse a single tab's CSV with fast timeout protection
+  // Helper to fetch and parse a single tab's CSV with cache-busting & fast timeout protection
   const parseSingleTab = async (tabItem: TabItem): Promise<any[]> => {
-    const csvUrl = `${PUB_BASE}/pub?gid=${tabItem.gid}&single=true&output=csv`;
+    // Add _cb timestamp to bypass browser cache & Google CDN cache so changes reflect instantly
+    const csvUrl = `${PUB_BASE}/pub?gid=${tabItem.gid}&single=true&output=csv&_cb=${Date.now()}`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8500);
 
     try {
-      const response = await fetch(csvUrl, { signal: controller.signal });
+      const response = await fetch(csvUrl, { 
+        signal: controller.signal,
+        cache: 'no-store',
+        headers: {
+          'Cache-Control': 'no-cache, no-store, must-revalidate',
+          'Pragma': 'no-cache'
+        }
+      });
       clearTimeout(timeoutId);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status} on tab ${tabItem.name}`);
@@ -370,27 +386,49 @@ export default function App() {
     }
   };
 
-  // Fetch all tabs in parallel with Stale-While-Revalidate:
-  // Never unmount or blank out existing data while fetching!
-  const fetchAllTabs = useCallback(async (tabList: TabItem[], isUserTriggered = false) => {
+  // Fetch all tabs in parallel with Stale-While-Revalidate and automatic self-healing:
+  // If Google changes worksheet GIDs, automatically re-discovers and re-fetches!
+  const fetchAllTabs = useCallback(async (tabList: TabItem[], isSilent = false) => {
     if (!tabList || tabList.length === 0) return;
 
     // Only display full loading screen if we literally have zero cached rows
     setIsLoading(prevLoading => {
       const hasAnyRows = Object.keys(tabsData).length > 0;
-      if (!hasAnyRows) return true;
+      if (!hasAnyRows && !isSilent) return true;
       return false;
     });
 
     setIsRefreshing(true);
 
     try {
-      const results = await Promise.allSettled(
-        tabList.map(async tab => {
+      let activeTabList = tabList;
+      let results = await Promise.allSettled(
+        activeTabList.map(async tab => {
           const rows = await parseSingleTab(tab);
           return { name: tab.name, rows };
         })
       );
+
+      // Self-healing: If all or most tabs failed (e.g. user re-uploaded sheet with new GIDs), discover fresh GIDs
+      const failedCount = results.filter(r => r.status === 'rejected' || (r.status === 'fulfilled' && (!r.value.rows || r.value.rows.length === 0))).length;
+      if (failedCount > 0) {
+        console.warn(`Detected ${failedCount} failing tabs, checking pubhtml for updated GIDs...`);
+        const freshTabs = await discoverTabs();
+        const hasGidChanges = freshTabs.some(ft => {
+          const old = activeTabList.find(t => t.name === ft.name);
+          return !old || old.gid !== ft.gid;
+        });
+
+        if (hasGidChanges) {
+          activeTabList = freshTabs;
+          results = await Promise.allSettled(
+            activeTabList.map(async tab => {
+              const rows = await parseSingleTab(tab);
+              return { name: tab.name, rows };
+            })
+          );
+        }
+      }
 
       const successfulMap: Record<string, any[]> = {};
       results.forEach(res => {
@@ -399,7 +437,7 @@ export default function App() {
         }
       });
 
-      // Keep existing data for any tab that failed or was slow; only merge fresh successful data
+      // Update tabsData with fresh data
       if (Object.keys(successfulMap).length > 0) {
         setTabsData(prev => ({ ...prev, ...successfulMap }));
         setLastUpdated(new Date());
@@ -412,33 +450,35 @@ export default function App() {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [tabsData]);
+  }, [tabsData, discoverTabs]);
+
+  // Unified sync function that always queries live pubhtml and fetches live sheets
+  const syncAllData = useCallback(async (isSilent = true) => {
+    setIsRefreshing(true);
+    try {
+      const liveTabs = await discoverTabs();
+      const listToFetch = liveTabs && liveTabs.length > 0 ? liveTabs : tabs;
+      await fetchAllTabs(listToFetch, isSilent);
+    } catch (err: any) {
+      console.warn('Sync error:', err);
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [discoverTabs, fetchAllTabs, tabs]);
 
   // Initial load: Instant cached view + immediate parallel background revalidation
   useEffect(() => {
-    // 1. Instantly trigger parallel CSV downloads
-    fetchAllTabs(tabs, false);
-
-    // 2. Concurrently check pubhtml for newly added tabs or changed GIDs in background
-    discoverTabs().then(freshTabs => {
-      const hasDifferences = freshTabs.length !== tabs.length || 
-        freshTabs.some(ft => !tabs.some(t => t.gid === ft.gid && t.name === ft.name));
-      if (hasDifferences) {
-        fetchAllTabs(freshTabs, false);
-      }
-    }).catch(err => {
-      console.warn('Background discovery check:', err);
-    });
+    syncAllData(true);
   }, []);
 
-  // Background Auto-Sync every 25 seconds
+  // Background Auto-Sync every 25 seconds (always runs unified sync)
   useEffect(() => {
     if (!isAutoRefreshEnabled) return;
     const intervalId = setInterval(() => {
-      fetchAllTabs(tabs, true);
+      syncAllData(true);
     }, 25000);
     return () => clearInterval(intervalId);
-  }, [isAutoRefreshEnabled, tabs, fetchAllTabs]);
+  }, [isAutoRefreshEnabled, syncAllData]);
 
   // Master list of all orders across all tabs
   const allMasterOrders = useMemo(() => {
@@ -894,9 +934,7 @@ export default function App() {
           <span className="text-slate-300">•</span>
 
           <button
-            onClick={() => {
-              fetchAllTabs(tabs, false);
-            }}
+            onClick={() => syncAllData(false)}
             disabled={isRefreshing}
             className="flex items-center gap-1 font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-md transition cursor-pointer disabled:opacity-50"
             title="Update all buyer orders from Google Sheets immediately"
@@ -915,7 +953,7 @@ export default function App() {
             <span>{syncNotice}</span>
           </div>
           <button
-            onClick={() => fetchAllTabs(tabs, false)}
+            onClick={() => syncAllData(false)}
             className="px-2.5 py-1 bg-amber-200 hover:bg-amber-300 text-amber-900 rounded text-xs font-bold transition cursor-pointer"
           >
             Retry
