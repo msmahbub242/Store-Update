@@ -37,8 +37,9 @@ import {
 } from 'lucide-react';
 import { saveLineAllocationsToFirestore, subscribeToLineAllocations, testFirestoreConnection } from './firebase';
 
-const PUB_BASE = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vTfhCfn7zzRTq8e3hrpRtdt4MIbz6a_fPQNKmtA6xQLYugd5Z_JJ0lJLKpvORo78Q';
-const PUBHTML_URL = `${PUB_BASE}/pubhtml`;
+const GOOGLE_SPREADSHEET_ID = '13JOa8EhpNDESBd7aEVpyu8PUjfh_-Fgk';
+const SHEET_BASE = `https://docs.google.com/spreadsheets/d/${GOOGLE_SPREADSHEET_ID}`;
+const DISCOVERY_URL = `${SHEET_BASE}/htmlview`;
 
 interface TabItem {
   name: string;
@@ -46,21 +47,21 @@ interface TabItem {
 }
 
 const INITIAL_TABS: TabItem[] = [
-  { name: 'LC WAIKIKI(Tariq sir)', gid: '1785194325' },
-  { name: 'BR sujoy', gid: '868605940' },
-  { name: 'BR Fahim', gid: '890569167' },
-  { name: 'Monoprix', gid: '871467747' },
-  { name: 'TESCO', gid: '613580876' },
-  { name: 'OVS', gid: '574564189' },
-  { name: 'Madam', gid: '1331640924' },
+  { name: 'LC WAIKIKI(Tariq sir)', gid: '1220923299' },
+  { name: 'BR sujoy', gid: '1683281169' },
+  { name: 'BR Fahim', gid: '1827972100' },
+  { name: 'Monoprix', gid: '1682598713' },
+  { name: 'TESCO', gid: '825869882' },
+  { name: 'OVS', gid: '1430838278' },
+  { name: 'Madam', gid: '685385370' },
 ];
 
 const TOTAL_SEWING_LINES = 15;
 const ALL_LINE_NAMES = Array.from({ length: TOTAL_SEWING_LINES }, (_, i) => `Line ${String(i + 1).padStart(2, '0')}`);
 const LINE_ALLOCATION_STORAGE_KEY = 'felix_sewing_line_allocations_v1';
-const TABS_DATA_CACHE_KEY = 'felix_tabs_data_cache_v4';
-const TABS_LIST_CACHE_KEY = 'felix_tabs_list_cache_v4';
-const LAST_SYNC_CACHE_KEY = 'felix_last_sync_time_v4';
+const TABS_DATA_CACHE_KEY = 'felix_tabs_data_cache_v5';
+const TABS_LIST_CACHE_KEY = 'felix_tabs_list_cache_v5';
+const LAST_SYNC_CACHE_KEY = 'felix_last_sync_time_v5';
 
 // Canonical column name normalizer to unify case differences across different buyer tabs
 const normalizeHeader = (rawKey: string): string | null => {
@@ -278,12 +279,12 @@ export default function App() {
     }
   }, [lastUpdated]);
 
-  // 1. Discover tabs and GIDs dynamically from pubhtml (with cache-busting & non-blocking timeout)
+  // 1. Discover tabs and GIDs dynamically from htmlview (with cache-busting & non-blocking timeout)
   const discoverTabs = useCallback(async (): Promise<TabItem[]> => {
     try {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 7000);
-      const bustUrl = `${PUBHTML_URL}?_cb=${Date.now()}`;
+      const bustUrl = `${DISCOVERY_URL}?_cb=${Date.now()}`;
       const res = await fetch(bustUrl, { 
         signal: controller.signal,
         cache: 'no-store',
@@ -319,15 +320,15 @@ export default function App() {
         return foundTabs;
       }
     } catch (err) {
-      console.warn('Could not refresh pubhtml tabs dynamically:', err);
+      console.warn('Could not refresh tabs dynamically from htmlview:', err);
     }
     return tabs;
   }, [tabs]);
 
   // Helper to fetch and parse a single tab's CSV with cache-busting & fast timeout protection
   const parseSingleTab = async (tabItem: TabItem): Promise<any[]> => {
-    // Add _cb timestamp to bypass browser cache & Google CDN cache so changes reflect instantly
-    const csvUrl = `${PUB_BASE}/pub?gid=${tabItem.gid}&single=true&output=csv&_cb=${Date.now()}`;
+    // Direct export CSV endpoint with zero publishing lag
+    const csvUrl = `${SHEET_BASE}/export?format=csv&gid=${tabItem.gid}&_cb=${Date.now()}`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8500);
 
@@ -495,14 +496,36 @@ export default function App() {
     return list;
   }, [tabsData]);
 
-  // Map of uniqueKey -> Order Object for fast line lookups
+  // Map of uniqueKey -> Order Object for fast line lookups with resilient PO and Tab fallback
   const ordersByKey = useMemo(() => {
     const map = new Map<string, any>();
     allMasterOrders.forEach(o => {
       map.set(o._uniqueKey, o);
+      if (o['PO']) {
+        const poStr = String(o['PO']).trim();
+        if (!map.has(`PO_${poStr}`)) map.set(`PO_${poStr}`, o);
+        const poTabStr = `${o._tabSource}___${poStr}`;
+        if (!map.has(poTabStr)) map.set(poTabStr, o);
+      }
     });
     return map;
   }, [allMasterOrders]);
+
+  // Resilient order finder: matches exact uniqueKey, or falls back to tab+PO or PO alone
+  const getOrderFromKey = useCallback((orderKey: string) => {
+    if (!orderKey) return null;
+    if (ordersByKey.has(orderKey)) return ordersByKey.get(orderKey);
+    const parts = orderKey.split('___');
+    if (parts.length >= 2) {
+      const tab = parts[0];
+      const po = parts[1]?.trim();
+      if (po) {
+        if (ordersByKey.has(`${tab}___${po}`)) return ordersByKey.get(`${tab}___${po}`);
+        if (ordersByKey.has(`PO_${po}`)) return ordersByKey.get(`PO_${po}`);
+      }
+    }
+    return null;
+  }, [ordersByKey]);
 
   // Authorization handler: checks username & password credentials
   const handleLogin = (e: React.FormEvent) => {
@@ -831,7 +854,7 @@ export default function App() {
       totalAllocatedPos += keys.length;
       if (keys.length === 5) linesWithFullQueue++;
       keys.forEach(k => {
-        const order = ordersByKey.get(k);
+        const order = getOrderFromKey(k);
         if (order && checkOrderReadiness(order).isReady) {
           totalReadyPos++;
         }
@@ -844,7 +867,7 @@ export default function App() {
       linesWithFullQueue,
       readyPercentage: totalAllocatedPos > 0 ? Math.round((totalReadyPos / totalAllocatedPos) * 100) : 0
     };
-  }, [lineAllocations, ordersByKey]);
+  }, [lineAllocations, getOrderFromKey]);
 
   // Filtered line list based on line filter & search query
   const displayedLineNames = useMemo(() => {
@@ -859,7 +882,7 @@ export default function App() {
         // Check if any allocated PO inside this line matches
         const keys = lineAllocations[lineName] || [];
         return keys.some(k => {
-          const order = ordersByKey.get(k);
+          const order = getOrderFromKey(k);
           if (!order) return false;
           return Object.entries(order).some(([key, val]) => {
             if (key.startsWith('_')) return false;
@@ -869,7 +892,7 @@ export default function App() {
       }
       return true;
     });
-  }, [selectedLineFilter, globalFilter, lineAllocations, ordersByKey]);
+  }, [selectedLineFilter, globalFilter, lineAllocations, getOrderFromKey]);
 
   return (
     <div className="p-4 md:p-8 bg-slate-50 min-h-screen text-slate-800 font-sans">
@@ -1340,7 +1363,7 @@ export default function App() {
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
               {displayedLineNames.map(lineName => {
                 const allocatedKeys = lineAllocations[lineName] || [];
-                const orders = allocatedKeys.map(k => ordersByKey.get(k)).filter(Boolean);
+                const orders = allocatedKeys.map(k => getOrderFromKey(k)).filter(Boolean);
                 const readyCount = orders.filter(o => checkOrderReadiness(o).isReady).length;
 
                 return (
@@ -1608,7 +1631,7 @@ export default function App() {
                   <tbody className="divide-y divide-slate-200 text-sm">
                     {displayedLineNames.map(lineName => {
                       const allocatedKeys = lineAllocations[lineName] || [];
-                      const orders = allocatedKeys.map(k => ordersByKey.get(k)).filter(Boolean);
+                      const orders = allocatedKeys.map(k => getOrderFromKey(k)).filter(Boolean);
 
                       if (orders.length === 0) {
                         return (
@@ -2139,7 +2162,7 @@ export default function App() {
                     </div>
                   ) : (
                     (lineAllocations[editingLine] || []).map((orderKey, idx) => {
-                      const order = ordersByKey.get(orderKey);
+                      const order = getOrderFromKey(orderKey);
                       if (!order) return null;
                       const readiness = checkOrderReadiness(order);
                       const isNext = idx === 0;
