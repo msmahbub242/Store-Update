@@ -175,6 +175,110 @@ export const fetchLineAllocationsFromFirestore = async (): Promise<Record<string
 
 export type FabricRole = 'master_admin' | 'store_manager' | 'receiver' | 'issuer' | 'viewer';
 
+export type FabricPermissionKey =
+  | 'viewRacks'
+  | 'bookFabric'
+  | 'receiveFabric'
+  | 'deliverFabric'
+  | 'manageRacks'
+  | 'deleteRecords'
+  | 'manageUsers'
+  | 'viewAudit'
+  | 'exportData';
+
+export type FabricPermissionMap = Record<FabricPermissionKey, boolean>;
+
+export interface FabricRolePermissionConfig {
+  id: FabricRole;
+  role: FabricRole;
+  label: string;
+  description: string;
+  permissions: FabricPermissionMap;
+  updatedAt: string;
+  updatedBy: string;
+}
+
+export const DEFAULT_ROLE_PERMISSIONS: Record<
+  FabricRole,
+  { label: string; description: string; permissions: FabricPermissionMap }
+> = {
+  master_admin: {
+    label: 'Master Admin',
+    description: 'Full control over users, role permissions, racks, booking, receiving, delivery & audit',
+    permissions: {
+      viewRacks: true,
+      bookFabric: true,
+      receiveFabric: true,
+      deliverFabric: true,
+      manageRacks: true,
+      deleteRecords: true,
+      manageUsers: true,
+      viewAudit: true,
+      exportData: true,
+    },
+  },
+  store_manager: {
+    label: 'Store In-Charge',
+    description: 'Manage racks, fabric booking, challan receiving, delivery & shared rack transfers',
+    permissions: {
+      viewRacks: true,
+      bookFabric: true,
+      receiveFabric: true,
+      deliverFabric: true,
+      manageRacks: true,
+      deleteRecords: true,
+      manageUsers: false,
+      viewAudit: true,
+      exportData: true,
+    },
+  },
+  receiver: {
+    label: 'Fabric Receiver',
+    description: 'Enter PO fabric requirements & record challan-wise receiving',
+    permissions: {
+      viewRacks: true,
+      bookFabric: true,
+      receiveFabric: true,
+      deliverFabric: false,
+      manageRacks: false,
+      deleteRecords: false,
+      manageUsers: false,
+      viewAudit: false,
+      exportData: true,
+    },
+  },
+  issuer: {
+    label: 'Delivery Officer',
+    description: 'View stock & issue Full/Partial fabric deliveries by PO & racks',
+    permissions: {
+      viewRacks: true,
+      bookFabric: false,
+      receiveFabric: false,
+      deliverFabric: true,
+      manageRacks: false,
+      deleteRecords: false,
+      manageUsers: false,
+      viewAudit: false,
+      exportData: true,
+    },
+  },
+  viewer: {
+    label: 'Viewer / Auditor',
+    description: 'Read-only access to Rack Stock Summary, Bookings & Ledgers',
+    permissions: {
+      viewRacks: true,
+      bookFabric: false,
+      receiveFabric: false,
+      deliverFabric: false,
+      manageRacks: false,
+      deleteRecords: false,
+      manageUsers: false,
+      viewAudit: false,
+      exportData: true,
+    },
+  },
+};
+
 export interface FabricUser {
   id: string;
   username: string;
@@ -183,6 +287,7 @@ export interface FabricUser {
   role: FabricRole;
   isActive: boolean;
   department?: string;
+  customPermissions?: Partial<FabricPermissionMap>;
   createdAt: string;
   updatedAt: string;
   createdBy?: string;
@@ -252,6 +357,7 @@ export interface FabricDelivery {
   id: string;
   receivingId: string;
   supplyNo: string;
+  supplyGroupId?: string;
   buyer: string;
   po: string;
   style?: string;
@@ -364,6 +470,23 @@ export async function bootstrapFabricStoreDefaults(): Promise<void> {
         )
       );
     }
+
+    // 3. Seed configurable role permissions matrix if not yet stored
+    const rolePermSnap = await getDocs(query(collection(db, 'fabric_role_permissions'), limit(1)));
+    if (rolePermSnap.empty) {
+      await Promise.all(
+        (Object.keys(DEFAULT_ROLE_PERMISSIONS) as FabricRole[]).map((roleKey) =>
+          setDoc(doc(db, 'fabric_role_permissions', roleKey), {
+            role: roleKey,
+            label: DEFAULT_ROLE_PERMISSIONS[roleKey].label,
+            description: DEFAULT_ROLE_PERMISSIONS[roleKey].description,
+            permissions: DEFAULT_ROLE_PERMISSIONS[roleKey].permissions,
+            updatedAt: now,
+            updatedBy: 'system',
+          })
+        )
+      );
+    }
   } catch (err) {
     console.warn('Bootstrap notice:', err);
   }
@@ -390,6 +513,75 @@ export function subscribeToFabricUsers(
       else handleFirestoreError(err, OperationType.LIST, path);
     }
   );
+}
+
+export function subscribeToFabricRolePermissions(
+  onUpdate: (configs: Record<FabricRole, FabricRolePermissionConfig>) => void,
+  onError?: (err: Error) => void
+) {
+  const path = 'fabric_role_permissions';
+  return onSnapshot(
+    collection(db, path),
+    (snapshot) => {
+      const result = {} as Record<FabricRole, FabricRolePermissionConfig>;
+      (Object.keys(DEFAULT_ROLE_PERMISSIONS) as FabricRole[]).forEach((rk) => {
+        result[rk] = {
+          id: rk,
+          role: rk,
+          label: DEFAULT_ROLE_PERMISSIONS[rk].label,
+          description: DEFAULT_ROLE_PERMISSIONS[rk].description,
+          permissions: { ...DEFAULT_ROLE_PERMISSIONS[rk].permissions },
+          updatedAt: '',
+          updatedBy: 'default',
+        };
+      });
+      snapshot.docs.forEach((d) => {
+        const data = d.data() as Omit<FabricRolePermissionConfig, 'id'>;
+        const rk = data.role || (d.id as FabricRole);
+        if (result[rk]) {
+          result[rk] = {
+            id: rk,
+            role: rk,
+            label: data.label || result[rk].label,
+            description: data.description || result[rk].description,
+            permissions: {
+              ...result[rk].permissions,
+              ...(data.permissions || {}),
+            },
+            updatedAt: data.updatedAt || '',
+            updatedBy: data.updatedBy || 'admin',
+          };
+        }
+      });
+      onUpdate(result);
+    },
+    (err) => {
+      if (onError) onError(err);
+      else handleFirestoreError(err, OperationType.LIST, path);
+    }
+  );
+}
+
+export async function saveFabricRolePermissionConfig(
+  role: FabricRole,
+  label: string,
+  description: string,
+  permissions: FabricPermissionMap,
+  updatedBy: string
+): Promise<void> {
+  const path = `fabric_role_permissions/${role}`;
+  try {
+    await setDoc(doc(db, 'fabric_role_permissions', role), {
+      role,
+      label: cleanStr(label, 60),
+      description: cleanStr(description, 240),
+      permissions,
+      updatedAt: new Date().toISOString(),
+      updatedBy: cleanStr(updatedBy, 64) || 'admin',
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
 }
 
 export function subscribeToFabricRacks(
@@ -529,6 +721,7 @@ export async function createFabricUser(input: {
   password: string;
   role: FabricRole;
   department?: string;
+  customPermissions?: Partial<FabricPermissionMap>;
   createdBy: string;
 }): Promise<string> {
   const usernameClean = input.username.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, '');
@@ -542,7 +735,7 @@ export async function createFabricUser(input: {
     }
     const now = new Date().toISOString();
     const passwordHash = await hashPassword(input.password);
-    await setDoc(doc(db, 'fabric_users', id), {
+    const payload: Record<string, any> = {
       username: cleanStr(usernameClean, 40),
       fullName: cleanStr(input.fullName, 100),
       passwordHash,
@@ -552,7 +745,11 @@ export async function createFabricUser(input: {
       createdAt: now,
       updatedAt: now,
       createdBy: cleanStr(input.createdBy, 64),
-    });
+    };
+    if (input.customPermissions && Object.keys(input.customPermissions).length > 0) {
+      payload.customPermissions = input.customPermissions;
+    }
+    await setDoc(doc(db, 'fabric_users', id), payload);
     return id;
   } catch (error) {
     if (error instanceof Error && error.message.includes('already exists')) throw error;
@@ -567,6 +764,7 @@ export async function updateFabricUser(
     role?: FabricRole;
     isActive?: boolean;
     department?: string;
+    customPermissions?: Partial<FabricPermissionMap>;
     newPassword?: string;
   },
   existingUser: FabricUser
@@ -577,7 +775,11 @@ export async function updateFabricUser(
       updates.newPassword && updates.newPassword.trim().length > 0
         ? await hashPassword(updates.newPassword.trim())
         : existingUser.passwordHash;
-    await updateDoc(doc(db, 'fabric_users', userId), {
+    const nextCustomPerms =
+      updates.customPermissions !== undefined
+        ? updates.customPermissions
+        : existingUser.customPermissions;
+    const payload: Record<string, any> = {
       username: existingUser.username,
       fullName: cleanStr(updates.fullName ?? existingUser.fullName, 100),
       passwordHash,
@@ -587,7 +789,13 @@ export async function updateFabricUser(
       createdAt: existingUser.createdAt,
       updatedAt: new Date().toISOString(),
       createdBy: cleanStr(existingUser.createdBy || 'admin', 64),
-    });
+    };
+    if (nextCustomPerms && Object.keys(nextCustomPerms).length > 0) {
+      payload.customPermissions = nextCustomPerms;
+    } else {
+      payload.customPermissions = {};
+    }
+    await updateDoc(doc(db, 'fabric_users', userId), payload);
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, path);
   }
@@ -876,7 +1084,36 @@ export async function deleteFabricReceiving(receivingId: string): Promise<void> 
   }
 }
 
-// Delivery CRUD
+// Delivery CRUD (Single & Multi-PO / Multi-Rack Batch)
+const buildDeliveryPayload = (
+  input: Omit<FabricDelivery, 'id' | 'createdAt'>,
+  now: string
+) => ({
+  receivingId: cleanStr(input.receivingId, 128),
+  supplyNo: cleanStr(input.supplyNo, 80),
+  supplyGroupId: cleanStr(input.supplyGroupId, 128),
+  buyer: cleanStr(input.buyer, 120),
+  po: cleanStr(input.po, 100),
+  style: cleanStr(input.style, 160),
+  itemName: cleanStr(input.itemName, 200),
+  fileNo: cleanStr(input.fileNo, 64),
+  shipDate: cleanStr(input.shipDate, 64),
+  rackCode: cleanStr(input.rackCode, 32),
+  fabricType: cleanStr(input.fabricType, 120),
+  color: cleanStr(input.color, 120),
+  gsm: cleanStr(input.gsm, 40),
+  lotNo: cleanStr(input.lotNo, 80),
+  deliveryType: input.deliveryType === 'Full' ? 'Full' : 'Partial',
+  weightKg: Math.max(0.01, Math.min(1000000, Number(input.weightKg))),
+  rollCount: Math.max(0, Math.min(100000, Number(input.rollCount) || 0)),
+  issuedTo: cleanStr(input.issuedTo, 100),
+  receiverName: cleanStr(input.receiverName, 100),
+  deliveryDate: cleanStr(input.deliveryDate, 32),
+  remark: cleanStr(input.remark, 400),
+  createdBy: cleanStr(input.createdBy, 64),
+  createdAt: now,
+});
+
 export async function createFabricDelivery(
   input: Omit<FabricDelivery, 'id' | 'createdAt'>
 ): Promise<string> {
@@ -884,33 +1121,33 @@ export async function createFabricDelivery(
   const path = `fabric_deliveries/${id}`;
   const now = new Date().toISOString();
   try {
-    await setDoc(doc(db, 'fabric_deliveries', id), {
-      receivingId: cleanStr(input.receivingId, 128),
-      supplyNo: cleanStr(input.supplyNo, 80),
-      buyer: cleanStr(input.buyer, 120),
-      po: cleanStr(input.po, 100),
-      style: cleanStr(input.style, 160),
-      itemName: cleanStr(input.itemName, 200),
-      fileNo: cleanStr(input.fileNo, 64),
-      shipDate: cleanStr(input.shipDate, 64),
-      rackCode: cleanStr(input.rackCode, 32),
-      fabricType: cleanStr(input.fabricType, 120),
-      color: cleanStr(input.color, 120),
-      gsm: cleanStr(input.gsm, 40),
-      lotNo: cleanStr(input.lotNo, 80),
-      deliveryType: input.deliveryType === 'Full' ? 'Full' : 'Partial',
-      weightKg: Math.max(0.01, Math.min(1000000, Number(input.weightKg))),
-      rollCount: Math.max(0, Math.min(100000, Number(input.rollCount) || 0)),
-      issuedTo: cleanStr(input.issuedTo, 100),
-      receiverName: cleanStr(input.receiverName, 100),
-      deliveryDate: cleanStr(input.deliveryDate, 32),
-      remark: cleanStr(input.remark, 400),
-      createdBy: cleanStr(input.createdBy, 64),
-      createdAt: now,
-    });
+    await setDoc(doc(db, 'fabric_deliveries', id), buildDeliveryPayload(input, now));
     return id;
   } catch (error) {
     handleFirestoreError(error, OperationType.CREATE, path);
+  }
+}
+
+export async function createFabricDeliveryBatch(
+  items: Array<Omit<FabricDelivery, 'id' | 'createdAt'>>
+): Promise<string[]> {
+  if (items.length === 0) return [];
+  const path = 'fabric_deliveries';
+  try {
+    const batch = writeBatch(db);
+    const ids: string[] = [];
+    const baseMs = Date.now();
+    items.forEach((item, idx) => {
+      const rand = Math.random().toString(36).slice(2, 8);
+      const id = `del_${baseMs}_${idx}_${rand}`.replace(/[^a-zA-Z0-9_-]/g, '');
+      const now = new Date(baseMs + idx).toISOString();
+      ids.push(id);
+      batch.set(doc(db, 'fabric_deliveries', id), buildDeliveryPayload(item, now));
+    });
+    await batch.commit();
+    return ids;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
   }
 }
 

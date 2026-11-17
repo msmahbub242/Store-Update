@@ -15,7 +15,6 @@ import {
   Radio, 
   AlertTriangle, 
   Layers, 
-  Sparkles,
   Factory,
   Plus,
   Trash2,
@@ -25,19 +24,20 @@ import {
   AlertCircle,
   LayoutGrid,
   Table as TableIcon,
-  ArrowUpDown,
-  Calendar,
-  Package,
   Lock,
-  Unlock,
   ShieldCheck,
   KeyRound,
-  LogOut,
   Database,
-  Warehouse
+  Warehouse,
+  ClipboardList,
+  PackageCheck,
+  Boxes,
+  Columns3,
+  Tag
 } from 'lucide-react';
 import { saveLineAllocationsToFirestore, subscribeToLineAllocations, testFirestoreConnection } from './firebase';
 import FabricStoreTab from './components/FabricStoreTab';
+import { PublicRackView } from './components/fabric-store/PublicRackView';
 
 const GOOGLE_SPREADSHEET_ID = '13JOa8EhpNDESBd7aEVpyu8PUjfh_-Fgk';
 const SHEET_BASE = `https://docs.google.com/spreadsheets/d/${GOOGLE_SPREADSHEET_ID}`;
@@ -138,6 +138,44 @@ export default function App() {
     }
     return {};
   });
+
+  // Public QR Rack landing state (?rack=A-01) & Manage handoff
+  const [publicRackCode, setPublicRackCode] = useState<string | null>(() => {
+    try {
+      const param = new URLSearchParams(window.location.search).get('rack');
+      return param && param.trim() ? param.trim().toUpperCase() : null;
+    } catch {
+      return null;
+    }
+  });
+  const [pendingManageRackId, setPendingManageRackId] = useState<string | null>(null);
+
+  const syncRackUrlParam = useCallback((code: string | null) => {
+    try {
+      const url = new URL(window.location.href);
+      if (code && code.trim()) {
+        url.searchParams.set('rack', code.trim().toUpperCase());
+      } else {
+        url.searchParams.delete('rack');
+      }
+      window.history.replaceState({}, '', url.toString());
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      try {
+        const param = new URLSearchParams(window.location.search).get('rack');
+        setPublicRackCode(param && param.trim() ? param.trim().toUpperCase() : null);
+      } catch {
+        setPublicRackCode(null);
+      }
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => window.removeEventListener('popstate', onPopState);
+  }, []);
 
   // activeTabName: can be a specific buyer tab name, '__ALL__', or '__LINE_WISE__'
   const [activeTabName, setActiveTabName] = useState<string>('__LINE_WISE__');
@@ -838,24 +876,24 @@ export default function App() {
   const getStatusPill = (val: string) => {
     const text = (val ?? '').toString().trim();
     if (!text) {
-      return <span className="text-slate-400 italic text-xs">-</span>;
+      return <span className="text-slate-400 text-xs font-medium">-</span>;
     }
     const isOk = text.toLowerCase() === 'ok';
     const isShort = text.length <= 10 && !text.includes('\n');
 
     return (
       <div 
-        className={`inline-block text-xs font-semibold border shadow-2xs transition-all ${
+        className={`inline-flex items-center gap-1 text-xs font-bold border transition-colors ${
           isShort 
-            ? 'px-2.5 py-1 rounded-full text-center tracking-wide' 
-            : 'px-3 py-2 rounded-xl text-left leading-relaxed break-words whitespace-normal max-w-[260px]'
+            ? 'px-2.5 py-1 rounded-md text-center tracking-wide' 
+            : 'px-3 py-1.5 rounded-lg text-left leading-relaxed break-words whitespace-normal max-w-[260px]'
         } ${
           isOk 
-            ? 'bg-emerald-100 text-emerald-800 border-emerald-300' 
-            : 'bg-rose-100 text-rose-800 border-rose-300'
+            ? 'bg-emerald-50 text-emerald-900 border-emerald-400' 
+            : 'bg-rose-50 text-rose-900 border-rose-300'
         }`}
       >
-        {isOk && <Check size={12} className="mr-1 inline stroke-[3] -mt-0.5" />}
+        {isOk && <Check size={13} className="shrink-0 stroke-[2.75] text-emerald-700" />}
         <span className="whitespace-pre-line">{text}</span>
       </div>
     );
@@ -912,492 +950,496 @@ export default function App() {
     });
   }, [selectedLineFilter, globalFilter, lineAllocations, getOrderFromKey]);
 
-  return (
-    <div className="p-4 md:p-8 bg-slate-50 min-h-screen text-slate-800 font-sans">
-      {/* Top Header */}
-      <div className="flex flex-col items-center justify-center mb-6">
-        <div className="bg-gradient-to-r from-blue-700 via-indigo-600 to-blue-600 text-white px-8 py-3.5 rounded-full shadow-lg border border-blue-400/30 flex items-center space-x-3">
-          <span className="h-3 w-3 rounded-full bg-emerald-400 animate-pulse"></span>
-          <h1 className="text-xl md:text-2xl font-extrabold tracking-wide drop-shadow-sm">
-            Felix Store App - Materials Status
-          </h1>
-        </div>
+  if (publicRackCode) {
+    return (
+      <PublicRackView
+        rackCode={publicRackCode}
+        onExitPublicView={() => {
+          syncRackUrlParam(null);
+          setPublicRackCode(null);
+        }}
+        onSelectOtherRack={(newCode) => {
+          const clean = newCode.trim().toUpperCase();
+          syncRackUrlParam(clean);
+          setPublicRackCode(clean);
+        }}
+        onEnterManageMode={(rackId) => {
+          syncRackUrlParam(null);
+          setPublicRackCode(null);
+          setGlobalFilter('');
+          setActiveTabName('__FABRIC_STORE__');
+          setPendingManageRackId(rackId);
+        }}
+      />
+    );
+  }
 
-        {/* Live sync status banner */}
-        <div className="flex flex-wrap items-center justify-center gap-3 mt-3 text-xs text-slate-500">
-          <div className="flex items-center gap-1.5 font-medium">
-            <Radio size={14} className={isAutoRefreshEnabled ? 'text-emerald-500 animate-pulse' : 'text-slate-400'} />
-            <span>Auto-Sync:</span>
+  return (
+    <div className="min-h-screen bg-slate-100 text-slate-900">
+      <div className="max-w-[1600px] mx-auto px-4 sm:px-6 lg:px-8 py-5 md:py-7 space-y-6">
+        {/* Top Brand & Live Sync Bar */}
+        <header className="bg-white rounded-xl border border-slate-300 px-5 py-4 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="h-10 w-10 rounded-lg bg-slate-900 text-white flex items-center justify-center shrink-0">
+              <Warehouse size={20} />
+            </div>
+            <div className="min-w-0">
+              <h1 className="text-xl md:text-2xl font-extrabold tracking-tight text-slate-900 truncate">
+                Felix Store App
+              </h1>
+              <p className="text-xs font-semibold text-slate-500">
+                Materials Status · 15 Sewing Line Queue · Fabric Store Control
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 text-xs">
             <button
               onClick={() => setIsAutoRefreshEnabled(!isAutoRefreshEnabled)}
-              className={`font-bold px-2 py-0.5 rounded cursor-pointer transition ${
-                isAutoRefreshEnabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-bold cursor-pointer transition ${
+                isAutoRefreshEnabled
+                  ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
+                  : 'bg-slate-100 text-slate-700 border-slate-300'
               }`}
+              title="Toggle 25-second background sheet synchronization"
             >
-              {isAutoRefreshEnabled ? 'ACTIVE (25s)' : 'PAUSED'}
+              <Radio size={14} className={isAutoRefreshEnabled ? 'text-emerald-700' : 'text-slate-500'} />
+              <span>Auto-Sync: {isAutoRefreshEnabled ? 'ON (25s)' : 'PAUSED'}</span>
+            </button>
+
+            <div
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg border font-bold ${
+                isDbSaving
+                  ? 'bg-amber-50 text-amber-900 border-amber-300'
+                  : dbError
+                    ? 'bg-rose-50 text-rose-900 border-rose-300'
+                    : isDbConnected
+                      ? 'bg-emerald-50 text-emerald-900 border-emerald-300'
+                      : 'bg-slate-100 text-slate-700 border-slate-300'
+              }`}
+              title="Real-time Cloud Database synchronization"
+            >
+              <Database size={14} className={isDbSaving ? 'animate-spin' : ''} />
+              <span>
+                Cloud DB: {isDbSaving ? 'Saving...' : dbError ? 'Retry Sync' : isDbConnected ? 'Synced' : 'Connecting...'}
+              </span>
+            </div>
+
+            <div className="px-3 py-1.5 rounded-lg border border-slate-300 bg-slate-50 text-slate-700 font-semibold font-mono">
+              {isRefreshing ? 'Syncing Sheet...' : `Sync: ${lastUpdated ? lastUpdated.toLocaleTimeString() : 'Connecting...'}`}
+            </div>
+
+            <button
+              onClick={() => syncAllData(false)}
+              disabled={isRefreshing}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold transition cursor-pointer disabled:opacity-50"
+              title="Update all buyer orders from Google Sheets immediately"
+            >
+              <RefreshCw size={14} className={isRefreshing ? 'animate-spin' : ''} />
+              <span>{isRefreshing ? 'Syncing...' : 'Refresh Now'}</span>
             </button>
           </div>
+        </header>
 
-          <span className="text-slate-300">•</span>
-
-          {/* Cloud Database real-time indicator */}
-          <div className="flex items-center gap-1.5 font-medium" title="Real-time Cloud Database synchronization">
-            <Database size={13} className={isDbSaving ? 'text-amber-500 animate-spin' : isDbConnected ? 'text-emerald-500' : 'text-slate-400'} />
-            <span>Cloud DB:</span>
-            <span className={`font-bold px-2 py-0.5 rounded text-[11px] ${
-              isDbSaving 
-                ? 'bg-amber-100 text-amber-800' 
-                : dbError
-                  ? 'bg-rose-100 text-rose-800'
-                  : isDbConnected 
-                    ? 'bg-emerald-100 text-emerald-800' 
-                    : 'bg-slate-200 text-slate-600'
-            }`}>
-              {isDbSaving ? 'SAVING...' : dbError ? 'RETRY SYNC' : isDbConnected ? 'LIVE SYNCED' : 'CONNECTING...'}
-            </span>
+        {/* Sync Notice Banner if any */}
+        {syncNotice && (
+          <div className="p-4 rounded-xl bg-amber-50 border border-amber-400 text-amber-950 flex items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 text-sm font-semibold">
+              <AlertTriangle className="text-amber-700 shrink-0" size={18} />
+              <span>{syncNotice}</span>
+            </div>
+            <button
+              onClick={() => syncAllData(false)}
+              className="px-3.5 py-1.5 bg-amber-200 hover:bg-amber-300 text-amber-950 rounded-lg text-xs font-bold border border-amber-400 transition cursor-pointer"
+            >
+              Retry Sync
+            </button>
           </div>
-
-          <span className="text-slate-300">•</span>
-
-          <div className="flex items-center gap-1.5">
-            <span>Last live sync:</span>
-            <span className="font-semibold text-slate-700">
-              {lastUpdated ? lastUpdated.toLocaleTimeString() : 'Connecting...'}
-            </span>
-            {isRefreshing && (
-              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-200">
-                <RefreshCw size={10} className="animate-spin text-blue-600" />
-                <span>Syncing live...</span>
-              </span>
-            )}
-          </div>
-
-          <span className="text-slate-300">•</span>
-
-          <button
-            onClick={() => syncAllData(false)}
-            disabled={isRefreshing}
-            className="flex items-center gap-1 font-semibold text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-2.5 py-1 rounded-md transition cursor-pointer disabled:opacity-50"
-            title="Update all buyer orders from Google Sheets immediately"
-          >
-            <RefreshCw size={12} className={isRefreshing ? 'animate-spin text-blue-600' : ''} />
-            <span>{isRefreshing ? 'Syncing...' : 'Refresh Now'}</span>
-          </button>
-        </div>
-      </div>
-
-      {/* Sync Notice Banner if any */}
-      {syncNotice && (
-        <div className="max-w-4xl mx-auto mb-6 p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 flex items-center justify-between gap-3 shadow-xs">
-          <div className="flex items-center gap-2 text-xs">
-            <AlertTriangle className="text-amber-600 shrink-0" size={16} />
-            <span>{syncNotice}</span>
-          </div>
-          <button
-            onClick={() => syncAllData(false)}
-            className="px-2.5 py-1 bg-amber-200 hover:bg-amber-300 text-amber-900 rounded text-xs font-bold transition cursor-pointer"
-          >
-            Retry
-          </button>
-        </div>
-      )}
-      
-      {/* Summary Cards (Hidden inside Fabric Receiving & Supply tab which has its own live Store KPIs) */}
-      {(activeTabName !== '__FABRIC_STORE__' || isUniversalSearchActive) && (
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-        {activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
-          <>
-            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
-              <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Sewing Lines</p>
-                <p className="text-2xl font-extrabold text-slate-900 mt-1">15 Lines</p>
-                <p className="text-[11px] text-slate-500 mt-0.5">5 Upcoming POs per line</p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold text-xl border border-amber-100">
-                🏭
-              </div>
-            </div>
-
-            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
-              <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Line Allocated POs</p>
-                <p className="text-2xl font-extrabold text-blue-900 mt-1">
-                  {lineMetrics.totalAllocatedPos} <span className="text-sm font-normal text-slate-400">/ 75 Target</span>
-                </p>
-                <p className="text-[11px] text-emerald-600 font-semibold mt-0.5">{lineMetrics.linesWithFullQueue} Lines full (5/5)</p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-xl border border-blue-100">
-                📋
-              </div>
-            </div>
-
-            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
-              <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Ready for Sewing</p>
-                <p className="text-2xl font-extrabold text-emerald-700 mt-1">
-                  {lineMetrics.totalReadyPos}{' '}
-                  <span className="text-sm font-bold text-slate-500">({lineMetrics.readyPercentage}%)</span>
-                </p>
-                <p className="text-[11px] text-slate-500 mt-0.5">Fabric & Sewing Acc. OK</p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-xl border border-emerald-100">
-                🧵
-              </div>
-            </div>
-
-            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
-              <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Total Orders in Store</p>
-                <p className="text-2xl font-extrabold text-indigo-900 mt-1">{allMasterOrders.length}</p>
-                <p className="text-[11px] text-slate-500 mt-0.5">Available across all buyers</p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-xl border border-indigo-100">
-                📦
-              </div>
-            </div>
-          </>
-        ) : (
-          <>
-            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
-              <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                  {isUniversalSearchActive ? 'Matched Orders (All Tabs)' : 'Total Orders'}
-                </p>
-                <p className="text-2xl font-extrabold text-slate-900 mt-1">{filteredData.length}</p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center font-bold text-lg border border-blue-100">
-                📦
-              </div>
-            </div>
-
-            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
-              <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                  {isUniversalSearchActive ? 'Matched DZN (All Tabs)' : 'Total DZN'}
-                </p>
-                <p className="text-2xl font-extrabold text-indigo-900 mt-1">
-                  {totalDzn.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
-                </p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center font-bold text-lg border border-indigo-100">
-                📊
-              </div>
-            </div>
-
-            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
-              <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Visible Columns</p>
-                <p className="text-2xl font-extrabold text-slate-900 mt-1">
-                  {visibleColumns.length} <span className="text-sm font-normal text-slate-400">/ {allColumns.length}</span>
-                </p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-amber-50 text-amber-600 flex items-center justify-center font-bold text-lg border border-amber-100">
-                👀
-              </div>
-            </div>
-
-            <div className="bg-white p-5 rounded-2xl shadow-xs border border-slate-200 flex items-center justify-between">
-              <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Active View</p>
-                <p className="text-sm font-bold text-emerald-700 mt-1 truncate max-w-[150px]">
-                  {isUniversalSearchActive ? 'All Buyer Tabs' : activeTabName === '__ALL__' ? 'All Combined' : activeTabName}
-                </p>
-              </div>
-              <div className="h-12 w-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-lg border border-emerald-100">
-                🏷️
-              </div>
-            </div>
-          </>
         )}
-      </div>
-      )}
 
-      {/* 2. SEARCH & ACTION BAR */}
-      <div className="bg-white p-4 rounded-2xl shadow-xs border border-slate-200 mb-4">
-        <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-          {/* Global Search across ALL tabs */}
-          <div className="relative flex-1">
-            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-blue-600" size={19} />
-            <input
-              className="w-full pl-10 pr-10 py-3 bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-300 rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition shadow-2xs"
-              placeholder="🔍 Search across ALL tabs, buyers & lines (by PO, Style, Buyer, Item, Line, Remark...)"
-              value={globalFilter}
-              onChange={(e) => {
-                setGlobalFilter(e.target.value);
-                setCurrentPage(1);
-              }}
-            />
-            {globalFilter && (
-              <button 
-                onClick={() => {
-                  setGlobalFilter('');
-                  setCurrentPage(1);
-                }}
-                className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer p-1"
-                title="Clear Search"
-              >
-                <X size={16} />
-              </button>
-            )}
-          </div>
-
-          {/* Action Buttons */}
-          {!(activeTabName === '__FABRIC_STORE__' && !isUniversalSearchActive) && (
-          <div className="flex items-center gap-2">
+        {/* Summary KPI Cards (Hidden inside Fabric Receiving & Supply tab which has its own live Store KPIs) */}
+        {(activeTabName !== '__FABRIC_STORE__' || isUniversalSearchActive) && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
               <>
-                {/* Authorization Status / Login Button */}
-                {isAuthorized ? (
-                  <div className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-emerald-50 text-emerald-800 border border-emerald-300">
-                    <ShieldCheck size={14} className="text-emerald-600 shrink-0" />
-                    <span>Planner Mode</span>
-                    <button
-                      onClick={handleLogout}
-                      className="ml-1 text-[11px] text-slate-500 hover:text-rose-700 underline font-medium cursor-pointer"
-                      title="Lock & exit planner session"
-                    >
-                      Lock
-                    </button>
+                <div className="bg-white p-5 rounded-xl border border-slate-300 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Sewing Lines</p>
+                    <p className="text-2xl md:text-3xl font-extrabold text-slate-900 font-mono tabular-nums mt-1">15 Lines</p>
+                    <p className="text-xs font-semibold text-slate-600 mt-1">Up to 5 POs per line</p>
                   </div>
-                ) : (
-                  <button
-                    onClick={() => {
-                      setPendingLineToManage(null);
-                      setShowAuthModal(true);
-                    }}
-                    className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold bg-amber-50 text-amber-900 hover:bg-amber-100 border border-amber-300 transition cursor-pointer shadow-2xs"
-                    title="Log in to allocate or manage POs"
-                  >
-                    <Lock size={13} className="text-amber-600" />
-                    <span>Planner Login</span>
-                  </button>
-                )}
+                  <div className="h-12 w-12 rounded-xl bg-amber-50 text-amber-700 border border-amber-300 flex items-center justify-center shrink-0">
+                    <Factory size={22} />
+                  </div>
+                </div>
 
-                {/* View Mode Toggle */}
-                <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
-                  <button
-                    onClick={() => setLineViewMode('cards')}
-                    className={`p-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition cursor-pointer ${
-                      lineViewMode === 'cards' ? 'bg-white text-blue-700 shadow-2xs' : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                    title="Card / Grid View"
-                  >
-                    <LayoutGrid size={15} />
-                    <span className="hidden sm:inline">Cards</span>
-                  </button>
-                  <button
-                    onClick={() => setLineViewMode('table')}
-                    className={`p-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition cursor-pointer ${
-                      lineViewMode === 'table' ? 'bg-white text-blue-700 shadow-2xs' : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                    title="Grouped Table View"
-                  >
-                    <TableIcon size={15} />
-                    <span className="hidden sm:inline">Table</span>
-                  </button>
+                <div className="bg-white p-5 rounded-xl border border-slate-300 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Line Allocated POs</p>
+                    <p className="text-2xl md:text-3xl font-extrabold text-blue-900 font-mono tabular-nums mt-1">
+                      {lineMetrics.totalAllocatedPos}{' '}
+                      <span className="text-sm font-semibold text-slate-400">/ 75</span>
+                    </p>
+                    <p className="text-xs font-bold text-emerald-700 mt-1">{lineMetrics.linesWithFullQueue} Lines full (5/5)</p>
+                  </div>
+                  <div className="h-12 w-12 rounded-xl bg-blue-50 text-blue-700 border border-blue-300 flex items-center justify-center shrink-0">
+                    <ClipboardList size={22} />
+                  </div>
+                </div>
+
+                <div className="bg-emerald-50/70 p-5 rounded-xl border border-emerald-400 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-emerald-900 uppercase tracking-wider">Ready for Sewing</p>
+                    <p className="text-2xl md:text-3xl font-extrabold text-emerald-900 font-mono tabular-nums mt-1">
+                      {lineMetrics.totalReadyPos}{' '}
+                      <span className="text-sm font-bold text-emerald-700">({lineMetrics.readyPercentage}%)</span>
+                    </p>
+                    <p className="text-xs font-semibold text-emerald-800 mt-1">Fabric & Sewing Acc. OK</p>
+                  </div>
+                  <div className="h-12 w-12 rounded-xl bg-emerald-600 text-white border border-emerald-700 flex items-center justify-center shrink-0">
+                    <PackageCheck size={22} />
+                  </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-xl border border-slate-300 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Orders in Store</p>
+                    <p className="text-2xl md:text-3xl font-extrabold text-slate-900 font-mono tabular-nums mt-1">
+                      {allMasterOrders.length}
+                    </p>
+                    <p className="text-xs font-semibold text-slate-600 mt-1">Synced across all buyers</p>
+                  </div>
+                  <div className="h-12 w-12 rounded-xl bg-slate-100 text-slate-800 border border-slate-300 flex items-center justify-center shrink-0">
+                    <Boxes size={22} />
+                  </div>
                 </div>
               </>
             ) : (
               <>
-                {/* Header Filters Toggle */}
-                <button
-                  onClick={() => setShowHeaderFilterRow(prev => !prev)}
-                  className={`flex items-center gap-2 px-3.5 py-2.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
-                    showHeaderFilterRow || Object.values(columnFilters).some(Boolean)
-                      ? 'bg-indigo-50 text-indigo-700 border-indigo-300'
-                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-                  }`}
-                  title="Toggle individual column header filters"
-                >
-                  <Filter size={15} />
-                  <span>Column Filters</span>
-                  {Object.values(columnFilters).filter(Boolean).length > 0 && (
-                    <span className="bg-indigo-600 text-white rounded-full px-1.5 py-0.2 text-[10px] font-bold">
-                      {Object.values(columnFilters).filter(Boolean).length}
-                    </span>
-                  )}
-                </button>
+                <div className="bg-white p-5 rounded-xl border border-slate-300 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                      {isUniversalSearchActive ? 'Matched Orders (All Tabs)' : 'Total Orders'}
+                    </p>
+                    <p className="text-2xl md:text-3xl font-extrabold text-slate-900 font-mono tabular-nums mt-1">
+                      {filteredData.length}
+                    </p>
+                  </div>
+                  <div className="h-12 w-12 rounded-xl bg-blue-50 text-blue-700 border border-blue-300 flex items-center justify-center shrink-0">
+                    <Boxes size={22} />
+                  </div>
+                </div>
 
-                {/* Column Visibility Control Button */}
-                <button
-                  onClick={() => setIsColumnPanelOpen(prev => !prev)}
-                  className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-semibold border transition cursor-pointer ${
-                    isColumnPanelOpen
-                      ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
-                      : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-                  }`}
-                >
-                  <SlidersHorizontal size={15} />
-                  <span>Customize Columns</span>
-                  <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
-                    isColumnPanelOpen ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-600'
-                  }`}>
-                    {visibleColumns.length}
-                  </span>
-                </button>
+                <div className="bg-white p-5 rounded-xl border border-slate-300 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">
+                      {isUniversalSearchActive ? 'Matched DZN' : 'Total DZN'}
+                    </p>
+                    <p className="text-2xl md:text-3xl font-extrabold text-indigo-900 font-mono tabular-nums mt-1">
+                      {totalDzn.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}
+                    </p>
+                  </div>
+                  <div className="h-12 w-12 rounded-xl bg-indigo-50 text-indigo-700 border border-indigo-300 flex items-center justify-center shrink-0">
+                    <ClipboardList size={22} />
+                  </div>
+                </div>
+
+                <div className="bg-white p-5 rounded-xl border border-slate-300 flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold text-slate-500 uppercase tracking-wider">Visible Columns</p>
+                    <p className="text-2xl md:text-3xl font-extrabold text-slate-900 font-mono tabular-nums mt-1">
+                      {visibleColumns.length} <span className="text-sm font-semibold text-slate-400">/ {allColumns.length}</span>
+                    </p>
+                  </div>
+                  <div className="h-12 w-12 rounded-xl bg-amber-50 text-amber-700 border border-amber-300 flex items-center justify-center shrink-0">
+                    <Columns3 size={22} />
+                  </div>
+                </div>
+
+                <div className="bg-slate-900 text-white p-5 rounded-xl border border-slate-800 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">Active View</p>
+                    <p className="text-base font-extrabold text-emerald-400 mt-1.5 truncate">
+                      {isUniversalSearchActive ? 'All Buyer Tabs' : activeTabName === '__ALL__' ? 'All Combined' : activeTabName}
+                    </p>
+                  </div>
+                  <div className="h-12 w-12 rounded-xl bg-slate-800 text-emerald-400 border border-slate-700 flex items-center justify-center shrink-0">
+                    <Tag size={20} />
+                  </div>
+                </div>
               </>
             )}
           </div>
+        )}
+
+        {/* Search & Action Bar */}
+        <div className="bg-white p-4 rounded-xl border border-slate-300">
+          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" size={18} />
+              <input
+                className="w-full pl-10 pr-10 py-2.5 bg-slate-50 hover:bg-white focus:bg-white border border-slate-300 rounded-lg text-sm font-semibold text-slate-900 focus:ring-2 focus:ring-blue-600 focus:border-blue-600 outline-none transition"
+                placeholder="Search across all buyer tabs & lines by PO, Style, Buyer, Item, Line, Remark..."
+                value={globalFilter}
+                onChange={(e) => {
+                  setGlobalFilter(e.target.value);
+                  setCurrentPage(1);
+                }}
+              />
+              {globalFilter && (
+                <button
+                  onClick={() => {
+                    setGlobalFilter('');
+                    setCurrentPage(1);
+                  }}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-900 cursor-pointer p-1"
+                  title="Clear Search"
+                >
+                  <X size={16} />
+                </button>
+              )}
+            </div>
+
+            {!(activeTabName === '__FABRIC_STORE__' && !isUniversalSearchActive) && (
+              <div className="flex items-center gap-2.5 flex-wrap">
+                {activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
+                  <>
+                    {isAuthorized ? (
+                      <div className="flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold bg-emerald-50 text-emerald-900 border border-emerald-400">
+                        <ShieldCheck size={15} className="text-emerald-700 shrink-0" />
+                        <span>Planner Mode Active</span>
+                        <button
+                          onClick={handleLogout}
+                          className="ml-1 px-2 py-0.5 rounded bg-white border border-emerald-300 text-slate-700 hover:text-rose-700 font-bold cursor-pointer"
+                          title="Lock & exit planner session"
+                        >
+                          Lock
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setPendingLineToManage(null);
+                          setShowAuthModal(true);
+                        }}
+                        className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg text-xs font-bold bg-amber-100 text-amber-950 hover:bg-amber-200 border border-amber-400 transition cursor-pointer"
+                        title="Log in to allocate or manage POs"
+                      >
+                        <Lock size={14} className="text-amber-800" />
+                        <span>Planner Login</span>
+                      </button>
+                    )}
+
+                    <div className="flex items-center bg-slate-100 p-1 rounded-lg border border-slate-300">
+                      <button
+                        onClick={() => setLineViewMode('cards')}
+                        className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                          lineViewMode === 'cards' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:text-slate-900'
+                        }`}
+                        title="Card / Grid View"
+                      >
+                        <LayoutGrid size={14} />
+                        <span>Cards</span>
+                      </button>
+                      <button
+                        onClick={() => setLineViewMode('table')}
+                        className={`px-3 py-1.5 rounded-md text-xs font-bold flex items-center gap-1.5 transition cursor-pointer ${
+                          lineViewMode === 'table' ? 'bg-slate-900 text-white' : 'text-slate-700 hover:text-slate-900'
+                        }`}
+                        title="Grouped Table View"
+                      >
+                        <TableIcon size={14} />
+                        <span>Table</span>
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      onClick={() => setShowHeaderFilterRow(prev => !prev)}
+                      className={`flex items-center gap-2 px-3.5 py-2.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                        showHeaderFilterRow || Object.values(columnFilters).some(Boolean)
+                          ? 'bg-indigo-600 text-white border-indigo-700'
+                          : 'bg-white text-slate-800 border-slate-300 hover:bg-slate-50'
+                      }`}
+                      title="Toggle individual column header filters"
+                    >
+                      <Filter size={15} />
+                      <span>Column Filters</span>
+                      {Object.values(columnFilters).filter(Boolean).length > 0 && (
+                        <span className="bg-white text-indigo-800 rounded px-1.5 py-0.5 text-[11px] font-extrabold">
+                          {Object.values(columnFilters).filter(Boolean).length}
+                        </span>
+                      )}
+                    </button>
+
+                    <button
+                      onClick={() => setIsColumnPanelOpen(prev => !prev)}
+                      className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                        isColumnPanelOpen
+                          ? 'bg-slate-900 text-white border-slate-900'
+                          : 'bg-white text-slate-800 border-slate-300 hover:bg-slate-50'
+                      }`}
+                    >
+                      <SlidersHorizontal size={15} />
+                      <span>Columns ({visibleColumns.length}/{allColumns.length})</span>
+                    </button>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
+          {isUniversalSearchActive && (
+            <div className="mt-3 pt-3 border-t border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex items-center gap-2 text-blue-950 font-bold bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-300">
+                <span>
+                  Universal Search: Found <strong className="font-mono">{filteredData.length}</strong> matching order(s) across all sheets
+                </span>
+              </div>
+
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-slate-500 font-semibold">Found in:</span>
+                {Object.entries(tabMatchesCount).map(([tName, count]) => (
+                  <span key={tName} className="bg-slate-100 text-slate-800 px-2.5 py-1 rounded-md font-semibold border border-slate-300">
+                    {tName}: <strong className="text-blue-800 font-mono">{count}</strong>
+                  </span>
+                ))}
+              </div>
+            </div>
           )}
         </div>
 
-        {/* Universal Search Active Notice Badge */}
-        {isUniversalSearchActive && (
-          <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
-            <div className="flex items-center gap-2 text-blue-800 font-semibold bg-blue-50 px-3 py-1.5 rounded-lg border border-blue-200">
-              <Sparkles size={14} className="text-blue-600 animate-spin" />
-              <span>
-                Universal Search Active: Found <span className="font-extrabold text-blue-900">{filteredData.length}</span> matching order(s) across all sheets!
-              </span>
-            </div>
-
-            {/* Quick breakdown of matches per tab */}
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <span className="text-slate-400">Found in:</span>
-              {Object.entries(tabMatchesCount).map(([tName, count]) => (
-                <span key={tName} className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-[11px] font-medium border border-slate-200">
-                  {tName}: <strong className="text-blue-700">{count}</strong>
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* 3. TAB SWITCHER - "Line Wise Update" placed RIGHT BEFORE "All Buyers" */}
-      <div className="flex items-center space-x-2 overflow-x-auto pb-2 mb-6 scrollbar-none">
-        {/* NEW: Line Wise Update Tab (15 Sewing Lines) */}
-        <button
-          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-sm transition-all whitespace-nowrap cursor-pointer shadow-xs ${
-            !isUniversalSearchActive && activeTabName === '__LINE_WISE__'
-              ? 'bg-amber-600 text-white shadow-md shadow-amber-500/25 ring-2 ring-amber-600 ring-offset-2'
-              : 'bg-white text-slate-700 border border-slate-200 hover:bg-amber-50/70 hover:text-amber-800'
-          }`}
-          onClick={() => {
-            setGlobalFilter('');
-            setActiveTabName('__LINE_WISE__');
-            setCurrentPage(1);
-          }}
-        >
-          <Factory size={16} className={!isUniversalSearchActive && activeTabName === '__LINE_WISE__' ? 'text-amber-100' : 'text-amber-600'} />
-          <span>Line Wise Update</span>
-          <span className={`text-[11px] font-extrabold px-2 py-0.5 rounded-full ${
-            !isUniversalSearchActive && activeTabName === '__LINE_WISE__'
-              ? 'bg-amber-700/80 text-amber-100'
-              : 'bg-amber-100 text-amber-800'
-          }`}>
-            15 Lines
-          </span>
-        </button>
-
-        {/* NEW: Fabric Receiving & Supply Management Tab */}
-        <button
-          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-sm transition-all whitespace-nowrap cursor-pointer shadow-xs ${
-            !isUniversalSearchActive && activeTabName === '__FABRIC_STORE__'
-              ? 'bg-emerald-700 text-white shadow-md shadow-emerald-600/25 ring-2 ring-emerald-700 ring-offset-2'
-              : 'bg-white text-slate-700 border border-slate-200 hover:bg-emerald-50/70 hover:text-emerald-800'
-          }`}
-          onClick={() => {
-            setGlobalFilter('');
-            setActiveTabName('__FABRIC_STORE__');
-            setCurrentPage(1);
-          }}
-        >
-          <Warehouse size={16} className={!isUniversalSearchActive && activeTabName === '__FABRIC_STORE__' ? 'text-emerald-100' : 'text-emerald-600'} />
-          <span>Fabric Receiving & Supply</span>
-        </button>
-
-        {/* All Buyers (Combined) Tab */}
-        <button
-          className={`flex items-center gap-1.5 px-4.5 py-2.5 rounded-xl font-bold text-sm transition-all whitespace-nowrap cursor-pointer ${
-            !isUniversalSearchActive && activeTabName === '__ALL__'
-              ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/25 ring-2 ring-indigo-600 ring-offset-2'
-              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100 shadow-xs'
-          }`}
-          onClick={() => {
-            setGlobalFilter('');
-            setActiveTabName('__ALL__');
-            setCurrentPage(1);
-          }}
-        >
-          <Layers size={15} />
-          <span>All Buyers (Combined)</span>
-        </button>
-
-        {/* Individual Buyer Tabs */}
-        {tabs.map(tab => (
+        {/* Navigation Tab Switcher */}
+        <nav className="flex items-center gap-2 overflow-x-auto pb-3 border-b border-slate-300 scrollbar-none">
           <button
-            key={tab.name}
-            className={`px-4.5 py-2.5 rounded-xl font-bold text-sm transition-all whitespace-nowrap cursor-pointer ${
-              !isUniversalSearchActive && activeTabName === tab.name
-                ? 'bg-blue-600 text-white shadow-md shadow-blue-500/25 ring-2 ring-blue-600 ring-offset-2'
-                : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100 hover:text-slate-900 shadow-xs'
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-bold text-sm transition whitespace-nowrap shrink-0 cursor-pointer border ${
+              !isUniversalSearchActive && activeTabName === '__LINE_WISE__'
+                ? 'bg-amber-600 text-white border-amber-700'
+                : 'bg-white text-slate-800 border-slate-300 hover:border-amber-500 hover:bg-amber-50/60'
             }`}
             onClick={() => {
               setGlobalFilter('');
-              setActiveTabName(tab.name);
+              setActiveTabName('__LINE_WISE__');
               setCurrentPage(1);
-              setColumnFilters({});
             }}
           >
-            {tab.name}
-            {tabsData[tab.name] && (
-              <span className="ml-1.5 text-xs opacity-75 font-normal">
-                ({tabsData[tab.name].length})
-              </span>
-            )}
+            <Factory size={16} />
+            <span>Line Wise Update (15)</span>
           </button>
-        ))}
-      </div>
 
-      {/* ========================================================================= */}
-      {/* RENDER CONTENT: FABRIC STORE, LINE WISE UPDATE, OR STANDARD TABLE         */}
-      {/* ========================================================================= */}
+          <button
+            className={`flex items-center gap-2 px-4 py-2.5 rounded-lg font-bold text-sm transition whitespace-nowrap shrink-0 cursor-pointer border ${
+              !isUniversalSearchActive && activeTabName === '__FABRIC_STORE__'
+                ? 'bg-emerald-700 text-white border-emerald-800'
+                : 'bg-white text-slate-800 border-slate-300 hover:border-emerald-600 hover:bg-emerald-50/60'
+            }`}
+            onClick={() => {
+              setGlobalFilter('');
+              setActiveTabName('__FABRIC_STORE__');
+              setCurrentPage(1);
+            }}
+          >
+            <Warehouse size={16} />
+            <span>Fabric Receiving & Supply</span>
+          </button>
 
-      {activeTabName === '__FABRIC_STORE__' && !isUniversalSearchActive ? (
-        <FabricStoreTab allMasterOrders={allMasterOrders} lineNames={ALL_LINE_NAMES} />
-      ) : activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
-        /* LINE WISE UPDATE VIEW */
-        <div className="space-y-6">
-          {/* Line Filter Pills (Line 01 to Line 15) */}
-          <div className="bg-white p-3.5 rounded-2xl border border-slate-200 shadow-xs flex items-center justify-between gap-3 flex-wrap">
-            <div className="flex items-center gap-1.5 text-xs font-bold text-slate-600 shrink-0">
-              <Factory size={15} className="text-amber-600" />
-              <span>Select Line:</span>
+          <button
+            className={`flex items-center gap-1.5 px-4 py-2.5 rounded-lg font-bold text-sm transition whitespace-nowrap shrink-0 cursor-pointer border ${
+              !isUniversalSearchActive && activeTabName === '__ALL__'
+                ? 'bg-slate-900 text-white border-slate-900'
+                : 'bg-white text-slate-800 border-slate-300 hover:border-slate-500 hover:bg-slate-50'
+            }`}
+            onClick={() => {
+              setGlobalFilter('');
+              setActiveTabName('__ALL__');
+              setCurrentPage(1);
+            }}
+          >
+            <Layers size={15} />
+            <span>All Buyers ({allMasterOrders.length})</span>
+          </button>
+
+          {tabs.map(tab => (
+            <button
+              key={tab.name}
+              className={`px-4 py-2.5 rounded-lg font-bold text-sm transition whitespace-nowrap shrink-0 cursor-pointer border ${
+                !isUniversalSearchActive && activeTabName === tab.name
+                  ? 'bg-blue-700 text-white border-blue-800'
+                  : 'bg-white text-slate-800 border-slate-300 hover:border-blue-500 hover:bg-slate-50'
+              }`}
+              onClick={() => {
+                setGlobalFilter('');
+                setActiveTabName(tab.name);
+                setCurrentPage(1);
+                setColumnFilters({});
+              }}
+            >
+              {tab.name}
+              {tabsData[tab.name] && (
+                <span className="ml-1.5 text-xs font-mono opacity-80">
+                  ({tabsData[tab.name].length})
+                </span>
+              )}
+            </button>
+          ))}
+        </nav>
+
+        {/* RENDER CONTENT: FABRIC STORE, LINE WISE UPDATE, OR STANDARD TABLE */}
+        {activeTabName === '__FABRIC_STORE__' && !isUniversalSearchActive ? (
+          <FabricStoreTab
+            allMasterOrders={allMasterOrders}
+            lineNames={ALL_LINE_NAMES}
+            initialRackId={pendingManageRackId}
+            onConsumeInitialRackId={() => setPendingManageRackId(null)}
+            onPreviewPublicRack={(code) => {
+              const clean = code.trim().toUpperCase();
+              syncRackUrlParam(clean);
+              setPublicRackCode(clean);
+            }}
+          />
+        ) : activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
+          /* LINE WISE UPDATE VIEW */
+          <div className="space-y-5">
+            {/* Line Filter Bar (Line 01 to Line 15) */}
+            <div className="bg-white p-4 rounded-xl border border-slate-300 flex items-center justify-between gap-3 flex-wrap">
+              <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-wider text-slate-700 shrink-0">
+                <Factory size={16} className="text-amber-600" />
+                <span>Filter Line:</span>
+              </div>
+              
+              <div className="flex items-center gap-1.5 flex-wrap flex-1">
+                <button
+                  onClick={() => setSelectedLineFilter('ALL')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition cursor-pointer ${
+                    selectedLineFilter === 'ALL'
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-slate-50 text-slate-700 border-slate-300 hover:bg-slate-100'
+                  }`}
+                >
+                  All 15 Lines
+                </button>
+                {ALL_LINE_NAMES.map(lineName => {
+                  const count = (lineAllocations[lineName] || []).length;
+                  return (
+                    <button
+                      key={lineName}
+                      onClick={() => setSelectedLineFilter(lineName)}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition flex items-center gap-1.5 cursor-pointer ${
+                        selectedLineFilter === lineName
+                          ? 'bg-amber-600 text-white border-amber-700'
+                          : 'bg-white text-slate-800 border-slate-300 hover:bg-slate-50'
+                      }`}
+                    >
+                      <span>{lineName}</span>
+                      <span className={`text-[11px] font-mono px-1.5 rounded ${selectedLineFilter === lineName ? 'bg-amber-800 text-white' : 'bg-slate-100 text-slate-700 border border-slate-300'}`}>
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
-            
-            <div className="flex items-center gap-1.5 flex-wrap flex-1">
-              <button
-                onClick={() => setSelectedLineFilter('ALL')}
-                className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
-                  selectedLineFilter === 'ALL'
-                    ? 'bg-slate-900 text-white shadow-2xs'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                All 15 Lines
-              </button>
-              {ALL_LINE_NAMES.map(lineName => {
-                const count = (lineAllocations[lineName] || []).length;
-                return (
-                  <button
-                    key={lineName}
-                    onClick={() => setSelectedLineFilter(lineName)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer ${
-                      selectedLineFilter === lineName
-                        ? 'bg-amber-600 text-white shadow-2xs'
-                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                    }`}
-                  >
-                    <span>{lineName}</span>
-                    <span className={`text-[10px] px-1 rounded ${selectedLineFilter === lineName ? 'bg-amber-700 text-amber-100' : 'bg-slate-200 text-slate-700'}`}>
-                      {count}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
 
           {/* Line Wise Card Board View */}
           {lineViewMode === 'cards' ? (
@@ -1408,30 +1450,27 @@ export default function App() {
                 const readyCount = orders.filter(o => checkOrderReadiness(o).isReady).length;
 
                 return (
-                  <div 
-                    key={lineName} 
-                    className="bg-white rounded-2xl border border-slate-200 shadow-xs hover:shadow-md transition-shadow flex flex-col overflow-hidden"
+                  <div
+                    key={lineName}
+                    className="bg-white rounded-xl border border-slate-300 flex flex-col overflow-hidden"
                   >
                     {/* Line Header */}
-                    <div className="p-4 bg-gradient-to-r from-slate-900 to-slate-800 text-white flex items-center justify-between">
-                      <div className="flex items-center gap-2.5">
-                        <div className="h-9 w-9 rounded-xl bg-amber-500/20 border border-amber-400/40 text-amber-300 flex items-center justify-center font-extrabold text-sm">
+                    <div className="px-4 py-3.5 bg-slate-900 text-white border-b border-slate-800 flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-3">
+                        <div className="h-9 w-9 rounded-lg bg-amber-500 text-slate-950 flex items-center justify-center font-extrabold font-mono text-sm">
                           {lineName.replace('Line ', 'L')}
                         </div>
                         <div>
-                          <h3 className="font-extrabold text-base tracking-wide text-white flex items-center gap-2">
+                          <h3 className="font-extrabold text-base text-white flex items-center gap-2">
                             <span>{lineName}</span>
-                            <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-slate-700 text-slate-200">
-                              {orders.length} / 5 POs
+                            <span className="text-xs font-mono font-bold text-amber-300">
+                              {orders.length}/5 POs
                             </span>
                           </h3>
-                          <p className="text-[11px] text-slate-400">
-                            Upcoming Production Queue
-                          </p>
+                          <p className="text-xs text-slate-400">Production Queue</p>
                         </div>
                       </div>
 
-                      {/* Manage / Assign POs Button */}
                       <button
                         onClick={() => {
                           if (!requireAuthorization(lineName)) return;
@@ -1439,25 +1478,31 @@ export default function App() {
                           setLineModalSearch('');
                           setLineModalBuyerFilter('ALL');
                         }}
-                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold transition flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                        className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold transition flex items-center gap-1.5 cursor-pointer"
                         title={`Assign or manage 5 POs for ${lineName}`}
                       >
-                        {isAuthorized ? <Plus size={13} /> : <Lock size={13} />}
+                        {isAuthorized ? <Plus size={14} /> : <Lock size={13} />}
                         <span>Manage POs</span>
                       </button>
                     </div>
 
-                    {/* Readiness Bar */}
-                    <div className="px-4 py-2.5 bg-slate-100 border-b border-slate-200 flex items-center justify-between text-xs">
-                      <span className="font-semibold text-slate-600">Material Readiness:</span>
-                      <span className={`font-bold flex items-center gap-1 ${readyCount === orders.length && orders.length > 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                    {/* Readiness Summary Bar */}
+                    <div className="px-4 py-2.5 bg-slate-50 border-b border-slate-300 flex items-center justify-between text-xs">
+                      <span className="font-bold text-slate-600 uppercase tracking-wider">Readiness</span>
+                      <span
+                        className={`font-extrabold flex items-center gap-1.5 px-2.5 py-0.5 rounded border ${
+                          readyCount === orders.length && orders.length > 0
+                            ? 'bg-emerald-50 text-emerald-900 border-emerald-400'
+                            : 'bg-amber-50 text-amber-900 border-amber-300'
+                        }`}
+                      >
                         {readyCount === orders.length && orders.length > 0 ? <CheckCircle2 size={13} /> : <AlertCircle size={13} />}
-                        {readyCount} of {orders.length} Ready for Sewing
+                        {readyCount} of {orders.length} Ready
                       </span>
                     </div>
 
-                    {/* 5 PO Slots Queue with crisp OUTLINE Styling */}
-                    <div className="p-4 flex-1 flex flex-col gap-3.5 bg-slate-50/40">
+                    {/* 5 PO Slots */}
+                    <div className="p-4 flex-1 flex flex-col gap-3.5 bg-slate-50/50">
                       {Array.from({ length: 5 }).map((_, slotIndex) => {
                         const order = orders[slotIndex];
                         const slotNum = slotIndex + 1;
@@ -1465,27 +1510,25 @@ export default function App() {
 
                         if (!order) {
                           return (
-                            <div 
-                              key={slotIndex} 
+                            <div
+                              key={slotIndex}
                               onClick={() => {
                                 if (!requireAuthorization(lineName)) return;
                                 setEditingLine(lineName);
                                 setLineModalSearch('');
                                 setLineModalBuyerFilter('ALL');
                               }}
-                              className="border-2 border-dashed border-slate-300 rounded-2xl p-3 text-center text-slate-400 hover:border-amber-400 hover:text-amber-800 hover:bg-amber-50/20 transition cursor-pointer flex flex-col items-center justify-center gap-1.5 min-h-[90px]"
+                              className="border border-dashed border-slate-300 bg-white rounded-xl p-3 text-center text-slate-500 hover:border-amber-500 hover:bg-amber-50/30 transition cursor-pointer flex items-center justify-between gap-2"
                             >
-                              <div className="flex items-center gap-2">
-                                <span className="h-6 w-6 rounded-md border border-slate-300 bg-slate-100 text-slate-600 font-black font-mono text-xs flex items-center justify-center">
+                              <div className="flex items-center gap-2.5">
+                                <span className="h-7 w-7 rounded-md border border-slate-300 bg-slate-100 text-slate-700 font-extrabold font-mono text-xs flex items-center justify-center">
                                   #{slotNum}
                                 </span>
-                                <span className="text-xs font-bold text-slate-600">
-                                  Empty Slot {slotNum}
-                                </span>
+                                <span className="text-xs font-bold text-slate-600">Empty Slot {slotNum}</span>
                               </div>
-                              <p className="text-[11px] text-slate-400">
-                                {isAuthorized ? '+ Click to assign upcoming PO' : '🔒 Authorization required to allocate'}
-                              </p>
+                              <span className="text-xs font-semibold text-slate-500">
+                                {isAuthorized ? '+ Assign PO' : 'Locked'}
+                              </span>
                             </div>
                           );
                         }
@@ -1493,25 +1536,24 @@ export default function App() {
                         const readiness = checkOrderReadiness(order);
 
                         return (
-                          <div 
-                            key={`slot_${lineName}_${slotIndex}_${allocatedKeys[slotIndex] || order._uniqueKey}`} 
-                            className={`rounded-2xl border-2 transition-all p-3.5 bg-white shadow-2xs ${
-                              isRunning 
-                                ? 'border-amber-500 ring-2 ring-amber-400/20' 
-                                : 'border-slate-300 hover:border-slate-400'
+                          <div
+                            key={`slot_${lineName}_${slotIndex}_${allocatedKeys[slotIndex] || order._uniqueKey}`}
+                            className={`rounded-xl border p-3.5 bg-white ${
+                              isRunning ? 'border-2 border-amber-500' : 'border-slate-300'
                             }`}
                           >
-                            {/* Top row: Queue Badge + Buyer + Running indicator + Action Buttons */}
-                            <div className="flex items-center justify-between gap-2 pb-2 mb-2.5 border-b border-slate-200">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className={`text-[11px] font-black font-mono px-2 py-0.5 rounded border ${
-                                  isRunning 
-                                    ? 'bg-amber-500 text-white border-amber-600 shadow-2xs' 
-                                    : 'bg-slate-100 text-slate-800 border-slate-300'
-                                }`}>
-                                  #{slotNum} {isRunning && '• NEXT / RUNNING'}
+                            <div className="flex items-center justify-between gap-2 pb-2.5 mb-2.5 border-b border-slate-200">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span
+                                  className={`text-xs font-extrabold font-mono px-2 py-0.5 rounded border ${
+                                    isRunning
+                                      ? 'bg-amber-500 text-slate-950 border-amber-600'
+                                      : 'bg-slate-100 text-slate-800 border-slate-300'
+                                  }`}
+                                >
+                                  #{slotNum} {isRunning && '· RUNNING'}
                                 </span>
-                                <span className="text-[11px] font-bold px-2 py-0.5 rounded border border-blue-300 bg-blue-50 text-blue-900">
+                                <span className="text-xs font-bold text-blue-900 bg-blue-50 border border-blue-300 px-2 py-0.5 rounded">
                                   {order._tabSource || 'Buyer'}
                                 </span>
                               </div>
@@ -1520,123 +1562,120 @@ export default function App() {
                                 {slotIndex > 0 && (
                                   <button
                                     onClick={() => movePoInLine(lineName, slotIndex, 'up')}
-                                    className="p-1 rounded border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-100 cursor-pointer"
-                                    title="Move Up in queue"
+                                    className="p-1 rounded border border-slate-300 text-slate-600 hover:text-slate-950 hover:bg-slate-100 cursor-pointer"
+                                    title="Move Up"
                                   >
-                                    <ArrowUp size={12} />
+                                    <ArrowUp size={13} />
                                   </button>
                                 )}
                                 {slotIndex < orders.length - 1 && (
                                   <button
                                     onClick={() => movePoInLine(lineName, slotIndex, 'down')}
-                                    className="p-1 rounded border border-slate-200 text-slate-500 hover:text-slate-900 hover:bg-slate-100 cursor-pointer"
-                                    title="Move Down in queue"
+                                    className="p-1 rounded border border-slate-300 text-slate-600 hover:text-slate-950 hover:bg-slate-100 cursor-pointer"
+                                    title="Move Down"
                                   >
-                                    <ArrowDown size={12} />
+                                    <ArrowDown size={13} />
                                   </button>
                                 )}
                                 <button
                                   onClick={() => removePoFromLine(lineName, order._uniqueKey)}
-                                  className="p-1 rounded border border-rose-200 text-rose-500 hover:text-rose-700 hover:bg-rose-50 cursor-pointer"
+                                  className="p-1 rounded border border-rose-300 text-rose-600 hover:bg-rose-50 cursor-pointer"
                                   title="Remove from line"
                                 >
-                                  <X size={12} />
+                                  <X size={13} />
                                 </button>
                               </div>
                             </div>
 
-                            {/* PO Data Outline Grid */}
-                            <div className="border border-slate-300 rounded-xl overflow-hidden mb-2.5 text-xs">
-                              {/* Row 1: PO & Style */}
-                              <div className="grid grid-cols-2 divide-x divide-slate-300 border-b border-slate-300 bg-slate-50/70">
+                            {/* Crisp Bordered Order Grid */}
+                            <div className="border border-slate-300 rounded-lg overflow-hidden mb-2.5 text-xs">
+                              <div className="grid grid-cols-2 divide-x divide-slate-300 border-b border-slate-300 bg-slate-50">
                                 <div className="p-2">
-                                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block">PO Number</span>
-                                  <span className="font-black text-slate-900 text-sm tracking-wide block truncate">
+                                  <span className="text-[11px] font-bold uppercase text-slate-500 block">PO Number</span>
+                                  <span className="font-extrabold font-mono text-slate-950 text-sm block truncate">
                                     {order['PO'] || '-'}
                                   </span>
                                 </div>
                                 <div className="p-2">
-                                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block">Style</span>
-                                  <span className="font-bold text-slate-800 text-xs block truncate" title={order['STYLE']}>
+                                  <span className="text-[11px] font-bold uppercase text-slate-500 block">Style</span>
+                                  <span className="font-bold text-slate-900 text-xs block truncate" title={order['STYLE']}>
                                     {order['STYLE'] || '-'}
                                   </span>
                                 </div>
                               </div>
 
-                              {/* Row 2: Item & File */}
                               <div className="p-2 border-b border-slate-300 bg-white">
-                                <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block">Item & File No</span>
-                                <span className="text-slate-800 font-semibold text-xs block truncate" title={`${order['ITEM'] || '-'} (${order['File No'] || '-'})`}>
-                                  {order['ITEM'] || '-'} {order['File No'] && <span className="text-slate-500 font-normal">({order['File No']})</span>}
+                                <span className="text-[11px] font-bold uppercase text-slate-500 block">Item & File No</span>
+                                <span className="text-slate-900 font-bold text-xs block truncate">
+                                  {order['ITEM'] || '-'}{' '}
+                                  {order['File No'] && <span className="text-slate-600 font-mono">({order['File No']})</span>}
                                 </span>
                               </div>
 
-                              {/* Row 3: DZN & Ship Date */}
-                              <div className="grid grid-cols-2 divide-x divide-slate-300 bg-slate-50/40">
+                              <div className="grid grid-cols-2 divide-x divide-slate-300 bg-slate-50/70">
                                 <div className="p-2">
-                                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block">DZN Qty</span>
-                                  <span className="font-extrabold text-indigo-700 text-xs block">
-                                    {order['DZN'] || '-'} Dzn
+                                  <span className="text-[11px] font-bold uppercase text-slate-500 block">Order Qty</span>
+                                  <span className="font-extrabold font-mono text-indigo-800 text-xs block">
+                                    {order['DZN'] || '-'} DZN
                                   </span>
                                 </div>
                                 <div className="p-2">
-                                  <span className="text-[10px] font-extrabold uppercase tracking-wider text-slate-500 block">Ship Date</span>
-                                  <span className="font-bold text-slate-700 text-xs block">
+                                  <span className="text-[11px] font-bold uppercase text-slate-500 block">Ship Date</span>
+                                  <span className="font-bold font-mono text-slate-800 text-xs block">
                                     {order['SHIP DATE'] || '-'}
                                   </span>
                                 </div>
                               </div>
                             </div>
 
-                            {/* Material Status Badges in Outline Style */}
-                            <div className="pt-2 border-t border-slate-200">
-                              <div className="flex items-center justify-between mb-1.5">
-                                <span className="text-slate-500 text-[10px] font-extrabold uppercase tracking-wider">Sewing Readiness</span>
+                            <div className="space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-slate-600 text-[11px] font-bold uppercase">Sewing Readiness</span>
                                 {readiness.isReady ? (
-                                  <span className="text-[10px] font-black border border-emerald-600 bg-emerald-50 text-emerald-800 px-2.5 py-0.5 rounded-full flex items-center gap-1 shadow-2xs">
-                                    <CheckCircle2 size={11} className="text-emerald-600" />
+                                  <span className="text-xs font-extrabold border border-emerald-500 bg-emerald-100 text-emerald-950 px-2.5 py-0.5 rounded flex items-center gap-1">
+                                    <CheckCircle2 size={12} className="text-emerald-700" />
                                     READY FOR SEWING
                                   </span>
                                 ) : (
-                                  <span className="text-[10px] font-black border border-amber-500 bg-amber-50 text-amber-800 px-2.5 py-0.5 rounded-full flex items-center gap-1">
-                                    <AlertCircle size={11} className="text-amber-600" />
+                                  <span className="text-xs font-bold border border-amber-400 bg-amber-50 text-amber-950 px-2.5 py-0.5 rounded flex items-center gap-1">
+                                    <AlertCircle size={12} className="text-amber-700" />
                                     PENDING
                                   </span>
                                 )}
                               </div>
 
-                              <div className="grid grid-cols-3 gap-1.5 text-[11px]">
-                                <div className={`p-1.5 rounded-lg border text-center ${
-                                  readiness.fabricOk 
-                                    ? 'border-emerald-400 bg-emerald-50/40 text-emerald-900' 
-                                    : 'border-rose-300 bg-rose-50/40 text-rose-900'
-                                }`} title={`Fabric: ${order['Fabric Update'] || '-'}`}>
-                                  <span className="text-[9px] uppercase font-bold text-slate-500 block">Fabric</span>
-                                  <span className="font-extrabold text-[11px] truncate block">
-                                    {order['Fabric Update'] || 'Pending'}
-                                  </span>
+                              <div className="grid grid-cols-3 gap-1.5 text-xs">
+                                <div
+                                  className={`p-1.5 rounded-md border text-center ${
+                                    readiness.fabricOk
+                                      ? 'border-emerald-400 bg-emerald-50 text-emerald-950'
+                                      : 'border-rose-300 bg-rose-50 text-rose-950'
+                                  }`}
+                                >
+                                  <span className="text-[10px] uppercase font-bold text-slate-600 block">Fabric</span>
+                                  <span className="font-extrabold truncate block">{order['Fabric Update'] || 'Pending'}</span>
                                 </div>
 
-                                <div className={`p-1.5 rounded-lg border text-center ${
-                                  readiness.sewingOk 
-                                    ? 'border-emerald-400 bg-emerald-50/40 text-emerald-900' 
-                                    : 'border-rose-300 bg-rose-50/40 text-rose-900'
-                                }`} title={`Sewing Acc: ${order['Sewing Acc. Update'] || '-'}`}>
-                                  <span className="text-[9px] uppercase font-bold text-slate-500 block">Sew Acc</span>
-                                  <span className="font-extrabold text-[11px] truncate block">
-                                    {order['Sewing Acc. Update'] || 'Pending'}
-                                  </span>
+                                <div
+                                  className={`p-1.5 rounded-md border text-center ${
+                                    readiness.sewingOk
+                                      ? 'border-emerald-400 bg-emerald-50 text-emerald-950'
+                                      : 'border-rose-300 bg-rose-50 text-rose-950'
+                                  }`}
+                                >
+                                  <span className="text-[10px] uppercase font-bold text-slate-600 block">Sew Acc</span>
+                                  <span className="font-extrabold truncate block">{order['Sewing Acc. Update'] || 'Pending'}</span>
                                 </div>
 
-                                <div className={`p-1.5 rounded-lg border text-center ${
-                                  readiness.finishingOk 
-                                    ? 'border-emerald-400 bg-emerald-50/40 text-emerald-900' 
-                                    : 'border-rose-300 bg-rose-50/40 text-rose-900'
-                                }`} title={`Finishing Acc: ${order['Finishing Acc. Update'] || '-'}`}>
-                                  <span className="text-[9px] uppercase font-bold text-slate-500 block">Fin Acc</span>
-                                  <span className="font-extrabold text-[11px] truncate block">
-                                    {order['Finishing Acc. Update'] || 'Pending'}
-                                  </span>
+                                <div
+                                  className={`p-1.5 rounded-md border text-center ${
+                                    readiness.finishingOk
+                                      ? 'border-emerald-400 bg-emerald-50 text-emerald-950'
+                                      : 'border-rose-300 bg-rose-50 text-rose-950'
+                                  }`}
+                                >
+                                  <span className="text-[10px] uppercase font-bold text-slate-600 block">Fin Acc</span>
+                                  <span className="font-extrabold truncate block">{order['Finishing Acc. Update'] || 'Pending'}</span>
                                 </div>
                               </div>
                             </div>
@@ -1650,26 +1689,26 @@ export default function App() {
             </div>
           ) : (
             /* Line Wise Grouped Table View */
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-300 overflow-hidden">
+            <div className="bg-white rounded-xl border border-slate-300 overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-left border-collapse border border-slate-300">
-                  <thead className="bg-slate-100 text-slate-800 text-xs uppercase font-bold">
+                  <thead className="bg-slate-100 text-slate-800 text-xs uppercase font-extrabold">
                     <tr>
-                      <th className="p-3 border border-slate-300">Sewing Line</th>
-                      <th className="p-3 border border-slate-300">Queue #</th>
-                      <th className="p-3 border border-slate-300">Buyer Tab</th>
-                      <th className="p-3 border border-slate-300">PO Number</th>
-                      <th className="p-3 border border-slate-300">Style / File No</th>
-                      <th className="p-3 border border-slate-300">Item</th>
-                      <th className="p-3 border border-slate-300">DZN</th>
-                      <th className="p-3 border border-slate-300">Ship Date</th>
-                      <th className="p-3 border border-slate-300">Fabric Status</th>
-                      <th className="p-3 border border-slate-300">Sewing Acc Status</th>
-                      <th className="p-3 border border-slate-300">Finishing Status</th>
-                      <th className="p-3 border border-slate-300 text-center">Action</th>
+                      <th className="p-3.5 border border-slate-300">Sewing Line</th>
+                      <th className="p-3.5 border border-slate-300">Queue & Status</th>
+                      <th className="p-3.5 border border-slate-300">Buyer</th>
+                      <th className="p-3.5 border border-slate-300">PO Number</th>
+                      <th className="p-3.5 border border-slate-300">Style & File No</th>
+                      <th className="p-3.5 border border-slate-300">Item</th>
+                      <th className="p-3.5 border border-slate-300 text-right">DZN</th>
+                      <th className="p-3.5 border border-slate-300">Ship Date</th>
+                      <th className="p-3.5 border border-slate-300">Fabric</th>
+                      <th className="p-3.5 border border-slate-300">Sewing Acc</th>
+                      <th className="p-3.5 border border-slate-300">Finishing Acc</th>
+                      <th className="p-3.5 border border-slate-300 text-center">Action</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-200 text-sm">
+                  <tbody className="divide-y divide-slate-300 text-[13px]">
                     {displayedLineNames.map(lineName => {
                       const allocatedKeys = lineAllocations[lineName] || [];
                       const orders = allocatedKeys.map(k => getOrderFromKey(k)).filter(Boolean);
@@ -1677,13 +1716,13 @@ export default function App() {
                       if (orders.length === 0) {
                         return (
                           <tr key={lineName} className="hover:bg-slate-50">
-                            <td className="p-3 font-extrabold text-slate-900 border border-slate-300 bg-slate-50/50">
+                            <td className="p-3.5 font-extrabold text-slate-900 border border-slate-300 bg-slate-50">
                               {lineName}
                             </td>
-                            <td colSpan={10} className="p-3 text-slate-400 italic text-xs border border-slate-300">
-                              No upcoming POs assigned yet. Click "Manage" to add upcoming POs.
+                            <td colSpan={10} className="p-3.5 text-slate-500 text-xs border border-slate-300">
+                              No upcoming POs assigned yet.
                             </td>
-                            <td className="p-3 text-center border border-slate-300">
+                            <td className="p-3.5 text-center border border-slate-300">
                               <button
                                 onClick={() => {
                                   if (!requireAuthorization(lineName)) return;
@@ -1691,7 +1730,7 @@ export default function App() {
                                   setLineModalSearch('');
                                   setLineModalBuyerFilter('ALL');
                                 }}
-                                className="px-2.5 py-1 rounded bg-amber-500 text-slate-900 text-xs font-bold hover:bg-amber-400 cursor-pointer flex items-center justify-center gap-1 mx-auto"
+                                className="px-3 py-1.5 rounded-lg bg-amber-500 text-slate-950 text-xs font-extrabold hover:bg-amber-400 cursor-pointer inline-flex items-center gap-1 border border-amber-600"
                               >
                                 {isAuthorized ? null : <Lock size={11} />}
                                 <span>Manage</span>
@@ -1704,15 +1743,15 @@ export default function App() {
                       return orders.map((order, oIdx) => {
                         const readiness = checkOrderReadiness(order);
                         return (
-                          <tr key={`${lineName}_${oIdx}`} className={oIdx === 0 ? 'bg-amber-50/30' : 'hover:bg-slate-50'}>
+                          <tr key={`${lineName}_${oIdx}`} className={oIdx === 0 ? 'bg-amber-50/40' : 'hover:bg-slate-50'}>
                             {oIdx === 0 && (
-                              <td 
-                                rowSpan={orders.length} 
-                                className="p-3 font-extrabold text-slate-900 border border-slate-300 bg-slate-50 align-top"
+                              <td
+                                rowSpan={orders.length}
+                                className="p-3.5 font-extrabold text-slate-900 border border-slate-300 bg-slate-50 align-top"
                               >
                                 <div className="sticky top-2">
                                   <span className="text-base font-extrabold block">{lineName}</span>
-                                  <span className="text-[11px] font-semibold text-slate-500 block mb-2">{orders.length}/5 POs</span>
+                                  <span className="text-xs font-mono font-bold text-slate-600 block mb-2.5">{orders.length}/5 POs</span>
                                   <button
                                     onClick={() => {
                                       if (!requireAuthorization(lineName)) return;
@@ -1720,72 +1759,61 @@ export default function App() {
                                       setLineModalSearch('');
                                       setLineModalBuyerFilter('ALL');
                                     }}
-                                    className="px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-900 text-xs font-bold cursor-pointer flex items-center gap-1 shadow-2xs"
+                                    className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-extrabold cursor-pointer inline-flex items-center gap-1 border border-amber-600"
                                   >
                                     {isAuthorized ? null : <Lock size={11} />}
-                                    <span>Manage Line</span>
+                                    <span>Manage</span>
                                   </button>
                                 </div>
                               </td>
                             )}
 
-                            <td className="p-3 text-xs font-bold border border-slate-300 whitespace-nowrap">
-                              <div className="flex flex-col gap-1 items-start">
-                                <span className={`px-2 py-0.5 rounded ${oIdx === 0 ? 'bg-amber-600 text-white font-extrabold' : 'bg-slate-200 text-slate-800'}`}>
+                            <td className="p-3.5 text-xs font-bold border border-slate-300 whitespace-nowrap">
+                              <div className="flex flex-col gap-1.5 items-start">
+                                <span className={`px-2 py-0.5 rounded font-mono border ${oIdx === 0 ? 'bg-amber-500 text-slate-950 border-amber-600 font-extrabold' : 'bg-slate-100 text-slate-800 border-slate-300'}`}>
                                   #{oIdx + 1} {oIdx === 0 && '(Active)'}
                                 </span>
                                 {readiness.isReady ? (
-                                  <span className="text-[10px] font-black text-emerald-800 bg-emerald-100 border border-emerald-300 px-1.5 py-0.5 rounded whitespace-nowrap flex items-center gap-1 shadow-2xs">
-                                    <CheckCircle2 size={10} className="text-emerald-600 shrink-0" />
+                                  <span className="text-xs font-extrabold text-emerald-950 bg-emerald-100 border border-emerald-400 px-2 py-0.5 rounded whitespace-nowrap flex items-center gap-1">
+                                    <CheckCircle2 size={11} className="text-emerald-700 shrink-0" />
                                     Ready for Sewing
                                   </span>
                                 ) : (
-                                  <span className="text-[10px] font-semibold text-amber-800 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded whitespace-nowrap flex items-center gap-1">
-                                    <AlertCircle size={10} className="text-amber-600 shrink-0" />
+                                  <span className="text-xs font-bold text-amber-950 bg-amber-50 border border-amber-300 px-2 py-0.5 rounded whitespace-nowrap flex items-center gap-1">
+                                    <AlertCircle size={11} className="text-amber-700 shrink-0" />
                                     Pending
                                   </span>
                                 )}
                               </div>
                             </td>
-                            <td className="p-3 text-xs font-bold text-blue-800 border border-slate-300 whitespace-nowrap">
+                            <td className="p-3.5 text-xs font-extrabold text-blue-900 border border-slate-300 whitespace-nowrap">
                               {order._tabSource || '-'}
                             </td>
-                            <td className="p-3 font-extrabold text-slate-900 border border-slate-300 whitespace-nowrap">
+                            <td className="p-3.5 font-extrabold font-mono text-slate-950 border border-slate-300 whitespace-nowrap">
                               {order['PO'] || '-'}
                             </td>
-                            <td className="p-3 border border-slate-300">
-                              <div className="font-bold text-slate-900 leading-tight">
-                                {order['STYLE'] || '-'}
-                              </div>
+                            <td className="p-3.5 border border-slate-300">
+                              <div className="font-bold text-slate-900 leading-tight">{order['STYLE'] || '-'}</div>
                               {order['File No'] && (
-                                <div className="text-[11px] font-semibold text-slate-600 mt-1 flex items-center gap-1 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 w-fit">
-                                  <span className="text-slate-400 font-normal">File:</span>
-                                  <span className="text-slate-800 font-bold">{order['File No']}</span>
+                                <div className="text-xs font-bold text-slate-700 mt-1 bg-slate-100 px-2 py-0.5 rounded border border-slate-300 w-fit font-mono">
+                                  File: {order['File No']}
                                 </div>
                               )}
                             </td>
-                            <td className="p-3 text-slate-700 border border-slate-300">
-                              {order['ITEM'] || '-'}
-                            </td>
-                            <td className="p-3 font-bold text-indigo-700 border border-slate-300 whitespace-nowrap">
+                            <td className="p-3.5 font-medium text-slate-800 border border-slate-300">{order['ITEM'] || '-'}</td>
+                            <td className="p-3.5 text-right font-extrabold font-mono text-indigo-800 border border-slate-300 whitespace-nowrap">
                               {order['DZN'] || '-'}
                             </td>
-                            <td className="p-3 text-slate-700 border border-slate-300 whitespace-nowrap">
+                            <td className="p-3.5 font-mono font-semibold text-slate-800 border border-slate-300 whitespace-nowrap">
                               {order['SHIP DATE'] || '-'}
                             </td>
-                            <td className="p-3 border border-slate-300">
-                              {getStatusPill(order['Fabric Update'])}
-                            </td>
-                            <td className="p-3 border border-slate-300">
-                              {getStatusPill(order['Sewing Acc. Update'])}
-                            </td>
-                            <td className="p-3 border border-slate-300">
-                              {getStatusPill(order['Finishing Acc. Update'])}
-                            </td>
-                            <td className="p-3 text-center border border-slate-300">
+                            <td className="p-3.5 border border-slate-300">{getStatusPill(order['Fabric Update'])}</td>
+                            <td className="p-3.5 border border-slate-300">{getStatusPill(order['Sewing Acc. Update'])}</td>
+                            <td className="p-3.5 border border-slate-300">{getStatusPill(order['Finishing Acc. Update'])}</td>
+                            <td className="p-3.5 text-center border border-slate-300">
                               <button
                                 onClick={() => removePoFromLine(lineName, order._uniqueKey)}
-                                className="p-1 rounded text-rose-500 hover:bg-rose-100 cursor-pointer"
+                                className="p-1.5 rounded-lg border border-rose-300 text-rose-600 hover:bg-rose-50 cursor-pointer"
                                 title="Remove from line"
                               >
                                 <X size={15} />
@@ -1804,37 +1832,34 @@ export default function App() {
       ) : (
         /* STANDARD TABLE DASHBOARD (FOR ALL BUYERS & INDIVIDUAL BUYER TABS) */
         <>
-          {/* Column Visibility Panel (Expandable) */}
           {isColumnPanelOpen && (
-            <div className="bg-white p-5 rounded-2xl shadow-sm border border-blue-200 mb-6 transition-all">
+            <div className="bg-white p-5 rounded-xl border border-slate-300 transition-all">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 border-b border-slate-200 gap-2 mb-4">
                 <div>
-                  <h3 className="font-bold text-slate-900 text-sm flex items-center gap-2">
-                    <SlidersHorizontal size={16} className="text-blue-600" />
+                  <h3 className="font-extrabold text-slate-900 text-base flex items-center gap-2">
+                    <SlidersHorizontal size={16} className="text-blue-700" />
                     Column Visibility Manager
                   </h3>
-                  <p className="text-xs text-slate-500 mt-0.5">
-                    Toggle checkmarks to show or hide specific columns in the table below.
-                  </p>
+                  <p className="text-xs text-slate-600 mt-0.5">Toggle checkmarks to show or hide columns below.</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
                     onClick={showAllColumns}
-                    className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1.5 transition cursor-pointer"
+                    className="px-3 py-1.5 text-xs font-bold rounded-lg bg-slate-100 border border-slate-300 text-slate-800 hover:bg-slate-200 flex items-center gap-1.5 cursor-pointer"
                   >
                     <Eye size={13} />
                     Show All
                   </button>
                   <button
                     onClick={hideAllColumns}
-                    className="px-3 py-1.5 text-xs font-semibold rounded-lg bg-slate-100 text-slate-700 hover:bg-slate-200 flex items-center gap-1.5 transition cursor-pointer"
+                    className="px-3 py-1.5 text-xs font-bold rounded-lg bg-slate-100 border border-slate-300 text-slate-800 hover:bg-slate-200 flex items-center gap-1.5 cursor-pointer"
                   >
                     <EyeOff size={13} />
                     Hide Extra
                   </button>
                   <button
                     onClick={() => setHiddenColumns([])}
-                    className="px-3 py-1.5 text-xs font-semibold rounded-lg text-blue-600 hover:bg-blue-50 flex items-center gap-1.5 transition cursor-pointer"
+                    className="px-3 py-1.5 text-xs font-bold rounded-lg border border-blue-300 bg-blue-50 text-blue-800 hover:bg-blue-100 flex items-center gap-1.5 cursor-pointer"
                   >
                     <RotateCcw size={13} />
                     Reset
@@ -1845,28 +1870,22 @@ export default function App() {
               <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-2.5">
                 {allColumns.map(col => {
                   const isVisible = !hiddenColumns.includes(col);
-                  const isStatus = isStatusColumn(col);
                   return (
                     <label
                       key={col}
-                      className={`flex items-center gap-2 p-2.5 rounded-xl border text-xs font-medium cursor-pointer transition select-none ${
+                      className={`flex items-center gap-2 p-2.5 rounded-lg border text-xs font-bold cursor-pointer select-none ${
                         isVisible
-                          ? 'bg-blue-50/70 border-blue-300 text-blue-900 font-semibold'
-                          : 'bg-slate-50 border-slate-200 text-slate-400 hover:border-slate-300'
+                          ? 'bg-blue-50 border-blue-400 text-blue-950'
+                          : 'bg-slate-50 border-slate-300 text-slate-500 hover:border-slate-400'
                       }`}
                     >
                       <input
                         type="checkbox"
                         checked={isVisible}
                         onChange={() => toggleColumnVisibility(col)}
-                        className="rounded text-blue-600 focus:ring-blue-500 h-4 w-4 border-slate-300"
+                        className="rounded text-blue-600 h-4 w-4 border-slate-300"
                       />
-                      <span className="truncate" title={col}>
-                        {col}
-                      </span>
-                      {isStatus && (
-                        <span className="ml-auto w-2 h-2 rounded-full bg-emerald-500 shrink-0" title="Status Column" />
-                      )}
+                      <span className="truncate" title={col}>{col}</span>
                     </label>
                   );
                 })}
@@ -1874,27 +1893,25 @@ export default function App() {
             </div>
           )}
 
-          {/* Table Container with FULL COMPLETE CELL BORDERS */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-300 overflow-hidden">
+          {/* Table Container with FULL CRISP CELL BORDERS */}
+          <div className="bg-white rounded-xl border border-slate-300 overflow-hidden">
             <div className="overflow-x-auto">
               {isLoading && baseData.length === 0 ? (
-                <div className="py-20 text-center text-slate-500">
-                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent mb-3"></div>
-                  <p className="font-semibold text-sm">Connecting & loading data from Google Sheets...</p>
-                  <p className="text-xs text-slate-400 mt-1">First-time load will finish in a few seconds</p>
+                <div className="py-20 text-center text-slate-600">
+                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-slate-900 border-t-transparent mb-3"></div>
+                  <p className="font-bold text-sm">Loading data from Google Sheets...</p>
                 </div>
               ) : allColumns.length === 0 && baseData.length === 0 ? (
-                <div className="py-20 text-center text-slate-500">
-                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-blue-500 border-t-transparent mb-3"></div>
-                  <p className="font-semibold text-sm">Syncing orders for {activeTabName === '__ALL__' ? 'All Combined' : activeTabName}...</p>
-                  <p className="text-xs text-slate-400 mt-1">Data will appear automatically in a moment</p>
+                <div className="py-20 text-center text-slate-600">
+                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-4 border-slate-900 border-t-transparent mb-3"></div>
+                  <p className="font-bold text-sm">Syncing orders for {activeTabName === '__ALL__' ? 'All Combined' : activeTabName}...</p>
                 </div>
               ) : allColumns.length > 0 && visibleColumns.length === 0 ? (
-                <div className="py-16 text-center text-slate-500">
-                  <p className="text-sm font-semibold">All columns are hidden by column filter.</p>
+                <div className="py-16 text-center text-slate-600">
+                  <p className="text-sm font-bold">All columns are hidden by column filter.</p>
                   <button
                     onClick={showAllColumns}
-                    className="mt-3 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold cursor-pointer shadow-sm transition"
+                    className="mt-3 px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold cursor-pointer"
                   >
                     Restore Columns
                   </button>
@@ -1902,43 +1919,34 @@ export default function App() {
               ) : (
                 <table className="w-full text-left border-collapse border border-slate-300">
                   <thead>
-                    {/* Main Table Column Header */}
-                    <tr className="bg-slate-100 text-slate-800">
+                    <tr className="bg-slate-100 text-slate-900">
                       {visibleColumns.map((col) => {
                         const isStatus = isStatusColumn(col);
                         const isRemark = col.toLowerCase().includes('remark');
                         const allowWrap = isStatus || isRemark;
                         return (
-                          <th 
-                            key={col} 
-                            className={`p-3.5 font-bold text-xs uppercase tracking-wider border border-slate-300 select-none ${
-                              col === 'Buyer Tab' ? 'bg-indigo-100 text-indigo-950 font-extrabold' : 'bg-slate-100'
+                          <th
+                            key={col}
+                            className={`px-3.5 py-3 font-extrabold text-xs uppercase tracking-wider border border-slate-300 select-none ${
+                              col === 'Buyer Tab' ? 'bg-blue-100 text-blue-950' : 'bg-slate-100'
                             } ${allowWrap ? 'min-w-[170px] max-w-[280px]' : 'whitespace-nowrap'}`}
                           >
-                            <div className="flex items-center justify-between gap-2">
-                              <span>{col}</span>
-                              {isStatus && (
-                                <span className="text-[10px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-normal normal-case">
-                                  status
-                                </span>
-                              )}
-                            </div>
+                            <span>{col}</span>
                           </th>
                         );
                       })}
                     </tr>
 
-                    {/* In-Header Filter Row */}
                     {showHeaderFilterRow && (
                       <tr className="bg-slate-50 border-b border-slate-300">
                         {visibleColumns.map((col) => (
-                          <th key={`filter-${col}`} className="p-1.5 border border-slate-300 bg-slate-50">
+                          <th key={`filter-${col}`} className="p-2 border border-slate-300 bg-slate-50">
                             <input
                               type="text"
                               placeholder={`Filter ${col}...`}
                               value={columnFilters[col] || ''}
                               onChange={(e) => setColumnFilter(col, e.target.value)}
-                              className="w-full text-xs font-normal px-2 py-1 bg-white border border-slate-300 rounded focus:ring-1 focus:ring-blue-500 focus:outline-none placeholder:text-slate-400"
+                              className="w-full text-xs font-medium px-2.5 py-1.5 bg-white border border-slate-300 rounded-md focus:ring-2 focus:ring-blue-500 outline-none"
                             />
                           </th>
                         ))}
@@ -1949,23 +1957,20 @@ export default function App() {
                   <tbody>
                     {currentRows.length === 0 ? (
                       <tr>
-                        <td colSpan={visibleColumns.length} className="py-12 text-center text-slate-400 border border-slate-300">
-                          {isUniversalSearchActive 
-                            ? `No orders matching "${globalFilter}" found across all tabs.` 
+                        <td colSpan={visibleColumns.length} className="py-12 text-center text-slate-500 font-semibold border border-slate-300">
+                          {isUniversalSearchActive
+                            ? `No orders matching "${globalFilter}" found across all tabs.`
                             : 'No matching records found in this sheet.'}
                         </td>
                       </tr>
                     ) : (
                       currentRows.map((row, i) => (
-                        <tr 
-                          key={i} 
-                          className={`${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/50'} hover:bg-blue-50/40 transition-colors`}
-                        >
+                        <tr key={i} className={`${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/70'} hover:bg-blue-50/50 transition-colors`}>
                           {visibleColumns.map((col) => {
                             if (col === 'Buyer Tab') {
                               return (
-                                <td key={col} className="p-3 text-xs font-bold text-indigo-800 bg-indigo-50/50 border border-slate-300 whitespace-nowrap align-top">
-                                  <span className="bg-indigo-100 px-2.5 py-1 rounded-md border border-indigo-200 inline-block">
+                                <td key={col} className="px-3.5 py-3 text-xs font-extrabold text-blue-950 bg-blue-50/50 border border-slate-300 whitespace-nowrap align-top">
+                                  <span className="bg-blue-100 px-2.5 py-1 rounded border border-blue-300 inline-block">
                                     {row._tabSource || activeTabName}
                                   </span>
                                 </td>
@@ -1975,26 +1980,30 @@ export default function App() {
                             const val = row[col];
                             const isStatus = isStatusColumn(col);
                             const isRemark = col.toLowerCase().includes('remark');
+                            const isKeyId = col === 'PO' || col === 'File No';
+                            const isDzn = col === 'DZN';
                             const allowWrap = isStatus || isRemark;
 
                             return (
-                              <td 
-                                key={col} 
-                                className={`p-3 text-sm text-slate-800 border border-slate-300 ${
-                                  allowWrap 
-                                    ? 'whitespace-normal break-words min-w-[170px] max-w-[280px] align-top' 
-                                    : 'whitespace-nowrap align-top'
-                                }`}
+                              <td
+                                key={col}
+                                className={`px-3.5 py-3 text-[13px] border border-slate-300 ${
+                                  isKeyId
+                                    ? 'font-extrabold font-mono text-slate-950'
+                                    : isDzn
+                                      ? 'font-bold font-mono text-indigo-900 text-right'
+                                      : col === 'STYLE'
+                                        ? 'font-bold text-slate-900'
+                                        : 'font-medium text-slate-800'
+                                } ${allowWrap ? 'whitespace-normal break-words min-w-[170px] max-w-[280px] align-top' : 'whitespace-nowrap align-top'}`}
                               >
-                                {isStatus 
-                                  ? getStatusPill(val) 
-                                  : (val !== undefined && val !== null && val !== '' ? (
-                                      isRemark ? (
-                                        <div className="leading-relaxed text-slate-700 text-xs whitespace-pre-line break-words max-w-[260px]">
-                                          {val}
-                                        </div>
-                                      ) : val
-                                    ) : '-')}
+                                {isStatus
+                                  ? getStatusPill(val)
+                                  : val !== undefined && val !== null && val !== ''
+                                    ? isRemark
+                                      ? <div className="leading-relaxed text-slate-700 text-xs whitespace-pre-line break-words max-w-[260px]">{val}</div>
+                                      : val
+                                    : '-'}
                               </td>
                             );
                           })}
@@ -2005,37 +2014,32 @@ export default function App() {
                 </table>
               )}
             </div>
-            
+
             {/* Pagination & Row Counter */}
             <div className="flex flex-col sm:flex-row items-center justify-between p-4 bg-slate-50 border-t border-slate-300 gap-3">
-              <p className="text-xs text-slate-600 font-medium">
-                Showing <span className="font-bold text-slate-900">{filteredData.length > 0 ? indexOfFirstRow + 1 : 0}</span> to{' '}
-                <span className="font-bold text-slate-900">{Math.min(indexOfLastRow, filteredData.length)}</span> of{' '}
-                <span className="font-bold text-slate-900">{filteredData.length}</span> rows
-                {isUniversalSearchActive && (
-                  <span className="ml-2 text-blue-700 font-semibold bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-                    Across All Tabs
-                  </span>
-                )}
+              <p className="text-xs text-slate-700 font-semibold">
+                Showing <span className="font-extrabold font-mono text-slate-950">{filteredData.length > 0 ? indexOfFirstRow + 1 : 0}</span> to{' '}
+                <span className="font-extrabold font-mono text-slate-950">{Math.min(indexOfLastRow, filteredData.length)}</span> of{' '}
+                <span className="font-extrabold font-mono text-slate-950">{filteredData.length}</span> rows
               </p>
 
               <div className="flex items-center space-x-2">
-                <button 
-                  className="flex items-center px-3.5 py-1.5 border border-slate-300 bg-white text-slate-700 text-xs font-bold rounded-lg shadow-2xs hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
-                  onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))} 
+                <button
+                  className="flex items-center px-3.5 py-1.5 border border-slate-300 bg-white text-slate-800 text-xs font-bold rounded-lg hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  onClick={() => setCurrentPage(prev => Math.max(prev - 1, 1))}
                   disabled={currentPage === 1}
                 >
                   <ChevronLeft size={15} className="mr-1" />
                   Previous
                 </button>
 
-                <span className="text-xs font-semibold text-slate-700 px-3 py-1 bg-white border border-slate-300 rounded-lg">
+                <span className="text-xs font-extrabold font-mono text-slate-800 px-3 py-1.5 bg-white border border-slate-300 rounded-lg">
                   {currentPage} / {totalPages}
                 </span>
 
-                <button 
-                  className="flex items-center px-3.5 py-1.5 border border-slate-300 bg-white text-slate-700 text-xs font-bold rounded-lg shadow-2xs hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer transition"
-                  onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))} 
+                <button
+                  className="flex items-center px-3.5 py-1.5 border border-slate-300 bg-white text-slate-800 text-xs font-bold rounded-lg hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  onClick={() => setCurrentPage(prev => Math.min(prev + 1, totalPages))}
                   disabled={currentPage === totalPages}
                 >
                   Next
@@ -2429,18 +2433,19 @@ export default function App() {
       )}
 
       {/* Footer Credit */}
-      <footer className="mt-12 pt-6 pb-6 border-t border-slate-200 text-center">
-        <div className="inline-flex flex-col sm:flex-row items-center justify-center gap-1.5 sm:gap-2 px-6 py-3.5 rounded-2xl bg-white border border-slate-200 shadow-xs text-xs text-slate-600">
+      <footer className="mt-10 pt-5 pb-4 border-t border-slate-300 text-center">
+        <div className="inline-flex flex-col sm:flex-row items-center justify-center gap-1.5 sm:gap-2 px-5 py-2.5 rounded-xl bg-white border border-slate-300 text-xs text-slate-700">
           <span className="font-semibold text-slate-500">Designed & Maintained by:</span>
-          <span className="font-extrabold text-blue-700 text-sm tracking-wide">Md Mahbubur Rahman</span>
-          <span className="hidden sm:inline text-slate-300">•</span>
+          <span className="font-extrabold text-slate-950 text-sm">Md Mahbubur Rahman</span>
+          <span className="hidden sm:inline text-slate-300">·</span>
           <span className="font-semibold text-slate-700">Store Department</span>
-          <span className="hidden sm:inline text-slate-300">•</span>
-          <span className="font-bold text-slate-800">
+          <span className="hidden sm:inline text-slate-300">·</span>
+          <span className="font-bold text-slate-900">
             Felix Fashions Ltd <span className="font-normal text-slate-500">(Four H Group)</span>
           </span>
         </div>
       </footer>
+      </div>
     </div>
   );
 }

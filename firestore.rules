@@ -53,7 +53,7 @@ service cloud.firestore {
     // Fabric Store Users & Roles
     function isValidFabricUser(data) {
       return data.keys().hasAll(['username', 'fullName', 'passwordHash', 'role', 'isActive', 'createdAt', 'updatedAt']) &&
-        data.keys().hasOnly(['username', 'fullName', 'passwordHash', 'role', 'isActive', 'department', 'createdAt', 'updatedAt', 'createdBy']) &&
+        data.keys().hasOnly(['username', 'fullName', 'passwordHash', 'role', 'isActive', 'department', 'customPermissions', 'createdAt', 'updatedAt', 'createdBy']) &&
         isStrLen(data.username, 2, 40) &&
         data.username.matches('^[a-zA-Z0-9_.-]+$') &&
         isStrLen(data.fullName, 2, 100) &&
@@ -61,6 +61,7 @@ service cloud.firestore {
         data.role in ['master_admin', 'store_manager', 'receiver', 'issuer', 'viewer'] &&
         data.isActive is bool &&
         isOptStr(data, 'department', 80) &&
+        (!('customPermissions' in data) || (data.customPermissions is map && data.customPermissions.size() <= 16)) &&
         isStrLen(data.createdAt, 4, 64) &&
         isStrLen(data.updatedAt, 4, 64) &&
         isOptStr(data, 'createdBy', 64);
@@ -75,6 +76,26 @@ service cloud.firestore {
         incoming().createdAt == existing().createdAt &&
         incoming().username == existing().username;
       allow delete: if isValidId(userId);
+    }
+
+    // Fabric Role Permission Matrix (Admin Configurable)
+    function isValidFabricRolePermission(data) {
+      return data.keys().hasAll(['role', 'label', 'permissions', 'updatedAt', 'updatedBy']) &&
+        data.keys().hasOnly(['role', 'label', 'description', 'permissions', 'updatedAt', 'updatedBy']) &&
+        data.role in ['master_admin', 'store_manager', 'receiver', 'issuer', 'viewer'] &&
+        isStrLen(data.label, 2, 60) &&
+        isOptStr(data, 'description', 240) &&
+        data.permissions is map &&
+        data.permissions.size() <= 16 &&
+        isStrLen(data.updatedAt, 4, 64) &&
+        isStrLen(data.updatedBy, 1, 64);
+    }
+
+    match /fabric_role_permissions/{roleId} {
+      allow get: if isValidId(roleId);
+      allow list: if true;
+      allow create: if isValidId(roleId) && isValidFabricRolePermission(incoming());
+      allow update: if isValidId(roleId) && isValidFabricRolePermission(incoming());
     }
 
     // Fabric Warehouse Racks
@@ -199,13 +220,14 @@ service cloud.firestore {
           'weightKg', 'issuedTo', 'deliveryDate', 'createdBy', 'createdAt'
         ]) &&
         data.keys().hasOnly([
-          'receivingId', 'supplyNo', 'buyer', 'po', 'style', 'itemName',
+          'receivingId', 'supplyNo', 'supplyGroupId', 'buyer', 'po', 'style', 'itemName',
           'fileNo', 'shipDate', 'rackCode', 'fabricType', 'color', 'gsm',
           'lotNo', 'deliveryType', 'weightKg', 'rollCount', 'issuedTo',
           'receiverName', 'deliveryDate', 'remark', 'createdBy', 'createdAt'
         ]) &&
         isStrLen(data.receivingId, 1, 128) &&
         isStrLen(data.supplyNo, 1, 80) &&
+        isOptStr(data, 'supplyGroupId', 128) &&
         isStrLen(data.buyer, 1, 120) &&
         isStrLen(data.po, 1, 100) &&
         isOptStr(data, 'style', 160) &&

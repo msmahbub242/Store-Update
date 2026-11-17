@@ -52,6 +52,10 @@
           "type": "string",
           "maxLength": 80
         },
+        "customPermissions": {
+          "type": "object",
+          "description": "Optional per-user granular permission overrides assigned by Master Admin"
+        },
         "createdAt": {
           "type": "string",
           "maxLength": 64
@@ -66,6 +70,39 @@
         }
       },
       "required": ["username", "fullName", "passwordHash", "role", "isActive", "createdAt", "updatedAt"]
+    },
+    "FabricRolePermission": {
+      "title": "FabricRolePermission",
+      "description": "Admin-configurable permission matrix per user role",
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["master_admin", "store_manager", "receiver", "issuer", "viewer"]
+        },
+        "label": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 60
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 240
+        },
+        "permissions": {
+          "type": "object",
+          "description": "Boolean capability flags for this role"
+        },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "updatedBy": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": ["role", "label", "permissions", "updatedAt", "updatedBy"]
     },
     "FabricRack": {
       "title": "FabricRack",
@@ -331,6 +368,10 @@
           "minLength": 1,
           "maxLength": 80
         },
+        "supplyGroupId": {
+          "type": "string",
+          "maxLength": 128
+        },
         "buyer": {
           "type": "string",
           "minLength": 1,
@@ -473,6 +514,10 @@
     "/fabric_users/{userId}": {
       "schema": "FabricUser",
       "description": "User accounts and roles for Fabric Store access control"
+    },
+    "/fabric_role_permissions/{roleId}": {
+      "schema": "FabricRolePermission",
+      "description": "Configurable role-based permission matrices managed by Master Admin"
     },
     "/fabric_racks/{rackId}": {
       "schema": "FabricRack",

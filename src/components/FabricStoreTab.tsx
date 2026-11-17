@@ -29,6 +29,8 @@ import {
   Layers,
   ChevronDown,
   ChevronUp,
+  Sliders,
+  QrCode,
 } from 'lucide-react';
 import {
   FabricRole,
@@ -38,8 +40,13 @@ import {
   FabricReceiving,
   FabricDelivery,
   FabricAuditLog,
+  FabricPermissionMap,
+  FabricRolePermissionConfig,
+  DEFAULT_ROLE_PERMISSIONS,
   bootstrapFabricStoreDefaults,
   subscribeToFabricUsers,
+  subscribeToFabricRolePermissions,
+  saveFabricRolePermissionConfig,
   subscribeToFabricRacks,
   subscribeToFabricRequirements,
   subscribeToFabricReceivings,
@@ -57,88 +64,35 @@ import {
   createFabricReceivingBatch,
   splitFabricReceivingToRack,
   deleteFabricReceiving,
-  createFabricDelivery,
+  createFabricDeliveryBatch,
   deleteFabricDelivery,
   logFabricAudit,
 } from '../firebase';
+import {
+  RolePermissionsMatrixCard,
+  UserCustomPermissionModal,
+  ALL_FABRIC_ROLES,
+  ROLE_BADGE_CLASSES,
+  resolveEffectivePermissions,
+} from './fabric-store/RolePermissionsPanel';
+import {
+  MultiPoDeliverySection,
+  DeliveryQueueLine,
+  EnrichedReceivingBatch,
+} from './fabric-store/MultiPoDeliverySection';
+import { RackStockSection } from './fabric-store/RackStockSection';
+import { BulkRackQrPrintModal, RackQrModal } from './fabric-store/RackQrModal';
+import { RackSummaryItem, getZoneColorPalette } from './fabric-store/rackZoneTheme';
 
 interface FabricStoreTabProps {
   allMasterOrders: any[];
   lineNames: string[];
+  initialRackId?: string | null;
+  onConsumeInitialRackId?: () => void;
+  onPreviewPublicRack?: (rackCode: string) => void;
 }
 
 type FabricSubTab = 'racks' | 'requirements' | 'receiving' | 'delivery' | 'ledger' | 'users';
-
-const ROLE_META: Record<
-  FabricRole,
-  {
-    label: string;
-    badgeClass: string;
-    canReceive: boolean;
-    canDeliver: boolean;
-    canManageRacks: boolean;
-    canDeleteRecords: boolean;
-    canManageUsers: boolean;
-    canViewAudit: boolean;
-    summary: string;
-  }
-> = {
-  master_admin: {
-    label: 'Master Admin',
-    badgeClass: 'bg-slate-900 text-white border-slate-900',
-    canReceive: true,
-    canDeliver: true,
-    canManageRacks: true,
-    canDeleteRecords: true,
-    canManageUsers: true,
-    canViewAudit: true,
-    summary: 'Full system control: users, roles, racks, booking, receiving, delivery & audit',
-  },
-  store_manager: {
-    label: 'Store In-Charge',
-    badgeClass: 'bg-indigo-50 text-indigo-800 border-indigo-300',
-    canReceive: true,
-    canDeliver: true,
-    canManageRacks: true,
-    canDeleteRecords: true,
-    canManageUsers: false,
-    canViewAudit: true,
-    summary: 'Manage racks, fabric booking, challan receiving, delivery & shared rack transfers',
-  },
-  receiver: {
-    label: 'Fabric Receiver',
-    badgeClass: 'bg-emerald-50 text-emerald-800 border-emerald-300',
-    canReceive: true,
-    canDeliver: false,
-    canManageRacks: false,
-    canDeleteRecords: false,
-    canManageUsers: false,
-    canViewAudit: false,
-    summary: 'Enter PO fabric requirements & record challan-wise receiving',
-  },
-  issuer: {
-    label: 'Delivery Officer',
-    badgeClass: 'bg-amber-50 text-amber-800 border-amber-300',
-    canReceive: false,
-    canDeliver: true,
-    canManageRacks: false,
-    canDeleteRecords: false,
-    canManageUsers: false,
-    canViewAudit: false,
-    summary: 'View stock & issue Full/Partial fabric deliveries by PO',
-  },
-  viewer: {
-    label: 'Viewer / Auditor',
-    badgeClass: 'bg-slate-100 text-slate-700 border-slate-300',
-    canReceive: false,
-    canDeliver: false,
-    canManageRacks: false,
-    canDeleteRecords: false,
-    canManageUsers: false,
-    canViewAudit: false,
-    summary: 'Read-only access to Rack Stock Summary, Bookings & Ledgers',
-  },
-};
 
 const FABRIC_TYPE_SUGGESTIONS = [
   'Single Jersey',
@@ -223,9 +177,30 @@ interface ChallanDraftLine {
   remark: string;
 }
 
-export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricStoreTabProps) {
+export default function FabricStoreTab({
+  allMasterOrders,
+  lineNames,
+  initialRackId,
+  onConsumeInitialRackId,
+  onPreviewPublicRack,
+}: FabricStoreTabProps) {
   // Firestore Live Collections
   const [users, setUsers] = useState<FabricUser[]>([]);
+  const [roleConfigs, setRoleConfigs] = useState<Record<FabricRole, FabricRolePermissionConfig>>(() => {
+    const init = {} as Record<FabricRole, FabricRolePermissionConfig>;
+    ALL_FABRIC_ROLES.forEach((rk) => {
+      init[rk] = {
+        id: rk,
+        role: rk,
+        label: DEFAULT_ROLE_PERMISSIONS[rk].label,
+        description: DEFAULT_ROLE_PERMISSIONS[rk].description,
+        permissions: { ...DEFAULT_ROLE_PERMISSIONS[rk].permissions },
+        updatedAt: '',
+        updatedBy: 'default',
+      };
+    });
+    return init;
+  });
   const [racks, setRacks] = useState<FabricRack[]>([]);
   const [requirements, setRequirements] = useState<FabricRequirement[]>([]);
   const [receivings, setReceivings] = useState<FabricReceiving[]>([]);
@@ -268,6 +243,8 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
 
   // Navigation & Toast
   const [activeSubTab, setActiveSubTab] = useState<FabricSubTab>('racks');
+  const [qrModalRack, setQrModalRack] = useState<RackSummaryItem | null>(null);
+  const [showBulkQrModal, setShowBulkQrModal] = useState(false);
   const [toast, setToast] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const showToast = (type: 'success' | 'error', text: string) => {
@@ -284,6 +261,7 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
     });
 
     const unsubUsers = subscribeToFabricUsers((list) => setUsers(list));
+    const unsubRolePerms = subscribeToFabricRolePermissions((cfg) => setRoleConfigs(cfg));
     const unsubRacks = subscribeToFabricRacks((list) => setRacks(list));
     const unsubReq = subscribeToFabricRequirements((list) => setRequirements(list));
     const unsubRec = subscribeToFabricReceivings((list) => setReceivings(list));
@@ -293,6 +271,7 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
     return () => {
       active = false;
       unsubUsers();
+      unsubRolePerms();
       unsubRacks();
       unsubReq();
       unsubRec();
@@ -300,6 +279,28 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
       unsubAudit();
     };
   }, []);
+
+  // Handoff from Public QR Rack View -> Manage Rack
+  useEffect(() => {
+    if (!initialRackId) return;
+    try {
+      const raw = sessionStorage.getItem(SESSION_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed?.userId && !currentUserId) {
+          setCurrentUserId(parsed.userId);
+          if (parsed.fallbackUser) setFallbackAdminSession(parsed.fallbackUser);
+        }
+      }
+    } catch {
+      // ignore
+    }
+    setActiveSubTab('racks');
+    setSelectedRackId(initialRackId);
+    setRackDetailShowExhausted(false);
+    setTransferBatchId(null);
+    if (onConsumeInitialRackId) onConsumeInitialRackId();
+  }, [initialRackId, currentUserId, onConsumeInitialRackId]);
 
   const currentUser: FabricUser | null = useMemo(() => {
     if (!currentUserId) return null;
@@ -309,7 +310,32 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
     return null;
   }, [currentUserId, users, fallbackAdminSession]);
 
-  const rolePerms = currentUser ? ROLE_META[currentUser.role] || ROLE_META.viewer : null;
+  const effectivePerms = useMemo(
+    () => resolveEffectivePermissions(currentUser, roleConfigs),
+    [currentUser, roleConfigs]
+  );
+
+  const rolePerms = useMemo(() => {
+    if (!currentUser) return null;
+    const roleCfg = roleConfigs[currentUser.role] || DEFAULT_ROLE_PERMISSIONS.viewer;
+    const hasCustom =
+      currentUser.customPermissions && Object.keys(currentUser.customPermissions).length > 0;
+    return {
+      label: roleCfg.label,
+      badgeClass: ROLE_BADGE_CLASSES[currentUser.role] || ROLE_BADGE_CLASSES.viewer,
+      summary: roleCfg.description,
+      hasCustomOverrides: Boolean(hasCustom),
+      canViewRacks: effectivePerms.viewRacks,
+      canBook: effectivePerms.bookFabric,
+      canReceive: effectivePerms.receiveFabric,
+      canDeliver: effectivePerms.deliverFabric,
+      canManageRacks: effectivePerms.manageRacks,
+      canDeleteRecords: effectivePerms.deleteRecords,
+      canManageUsers: effectivePerms.manageUsers,
+      canViewAudit: effectivePerms.viewAudit,
+      canExport: effectivePerms.exportData,
+    };
+  }, [currentUser, roleConfigs, effectivePerms]);
 
   const handleSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -345,7 +371,7 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
         await logFabricAudit({
           action: 'User Sign In',
           module: 'Auth',
-          details: `${matched.fullName} (@${matched.username}, ${ROLE_META[matched.role].label}) signed in.`,
+          details: `${matched.fullName} (@${matched.username}, ${roleConfigs[matched.role]?.label || matched.role}) signed in.`,
           actorUsername: matched.username,
           actorRole: matched.role,
         });
@@ -781,7 +807,7 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
 
   const handleCreateRequirement = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!rolePerms?.canReceive || !currentUser) return;
+    if (!rolePerms?.canBook || !currentUser) return;
     if (!selectedOrderForReq) {
       showToast('error', 'Select a PO from All Buyers first.');
       return;
@@ -1236,153 +1262,97 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
   }, [filteredReceivingsLedger]);
 
   // ============================================================================
-  // DELIVERY / SUPPLY STATE & HANDLERS (Call by PO Search, Full or Partial)
+  // MULTI-PO & MULTI-RACK DELIVERY / SUPPLY QUEUE & HANDLERS
   // ============================================================================
   const [delPoSearch, setDelPoSearch] = useState('');
-  const [delShowExhausted, setDelShowExhausted] = useState(false);
-  const [selectedBatchIdForDelivery, setSelectedBatchIdForDelivery] = useState<string | null>(null);
-  const [deliveryMode, setDeliveryMode] = useState<'Full' | 'Partial'>('Partial');
-  const [delForm, setDelForm] = useState({
-    supplyNo: '',
-    weightKg: '',
-    rollCount: '',
-    issuedTo: 'Cutting Floor',
-    receiverName: '',
-    deliveryDate: todayISO(),
-    remark: '',
-  });
-  const [isSubmittingDel, setIsSubmittingDel] = useState(false);
-  const [delHistorySearch, setDelHistorySearch] = useState('');
-  const [printSlipDelivery, setPrintSlipDelivery] = useState<FabricDelivery | null>(null);
+  const [deliveryQueue, setDeliveryQueue] = useState<DeliveryQueueLine[]>([]);
 
-  const suggestSupplyNo = () => {
-    const datePart = todayISO().replace(/-/g, '').slice(2);
-    const seq = String(deliveries.length + 1).padStart(3, '0');
-    return `SUP-${datePart}-${seq}`;
-  };
-
-  const deliveryCandidateBatches = useMemo(() => {
-    const q = delPoSearch.trim().toLowerCase();
-    return enrichedReceivings.filter((r) => {
-      if (!delShowExhausted && r.availableKg <= 0.009) return false;
-      if (!q) return true;
-      return (
-        r.po.toLowerCase().includes(q) ||
-        r.buyer.toLowerCase().includes(q) ||
-        (r.style || '').toLowerCase().includes(q) ||
-        (r.fileNo || '').toLowerCase().includes(q) ||
-        r.lotNo.toLowerCase().includes(q) ||
-        r.challanNo.toLowerCase().includes(q) ||
-        r.color.toLowerCase().includes(q)
-      );
-    });
-  }, [enrichedReceivings, delPoSearch, delShowExhausted]);
-
-  const selectedDeliveryBatch = useMemo(
-    () => enrichedReceivings.find((r) => r.id === selectedBatchIdForDelivery) || null,
-    [enrichedReceivings, selectedBatchIdForDelivery]
-  );
-
-  const selectBatchForDelivery = (batch: (typeof enrichedReceivings)[0], mode: 'Full' | 'Partial' = 'Partial') => {
-    setSelectedBatchIdForDelivery(batch.id);
-    setDeliveryMode(mode);
-    setDelForm({
-      supplyNo: suggestSupplyNo(),
-      weightKg: mode === 'Full' ? String(batch.availableKg) : '',
-      rollCount: mode === 'Full' && batch.availableRolls > 0 ? String(batch.availableRolls) : '',
-      issuedTo: 'Cutting Floor',
-      receiverName: '',
-      deliveryDate: todayISO(),
-      remark: '',
-    });
-  };
-
-  const handleToggleDeliveryMode = (mode: 'Full' | 'Partial') => {
-    setDeliveryMode(mode);
-    if (selectedDeliveryBatch && mode === 'Full') {
-      setDelForm((prev) => ({
+  const selectBatchForDelivery = (
+    batch: EnrichedReceivingBatch,
+    mode: 'Full' | 'Partial' = 'Partial'
+  ) => {
+    if (batch.availableKg <= 0.009) return;
+    setDeliveryQueue((prev) => {
+      if (prev.some((q) => q.batchId === batch.id)) return prev;
+      return [
         ...prev,
-        weightKg: String(selectedDeliveryBatch.availableKg),
-        rollCount: selectedDeliveryBatch.availableRolls > 0 ? String(selectedDeliveryBatch.availableRolls) : prev.rollCount,
-      }));
-    }
+        {
+          localId: `dq_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          batchId: batch.id,
+          mode,
+          weightKg: mode === 'Full' ? String(batch.availableKg) : '',
+          rollCount:
+            mode === 'Full' && batch.availableRolls > 0 ? String(batch.availableRolls) : '',
+        },
+      ];
+    });
   };
 
-  const handleCreateDelivery = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!rolePerms?.canDeliver || !currentUser || !selectedDeliveryBatch) return;
+  const handleSubmitDeliveryBatch = async (params: {
+    supplyNo: string;
+    deliveryDate: string;
+    issuedTo: string;
+    receiverName: string;
+    remark: string;
+    lines: Array<{
+      batch: EnrichedReceivingBatch;
+      mode: 'Full' | 'Partial';
+      weightKg: number;
+      rollCount: number;
+    }>;
+  }): Promise<boolean> => {
+    if (!rolePerms?.canDeliver || !currentUser || params.lines.length === 0) return false;
 
-    const weight = parseFloat(delForm.weightKg);
-    if (!Number.isFinite(weight) || weight <= 0) {
-      showToast('error', 'Enter a valid positive delivery weight (kg).');
-      return;
-    }
-    if (weight > selectedDeliveryBatch.availableKg + 0.009) {
-      showToast(
-        'error',
-        `Cannot deliver ${weight.toFixed(2)} kg. Available balance is ${selectedDeliveryBatch.availableKg.toFixed(2)} kg.`
-      );
-      return;
-    }
-    if (!delForm.supplyNo.trim() || !delForm.issuedTo.trim()) {
-      showToast('error', 'Supply No and Issued To destination are required.');
-      return;
-    }
-
-    const effectiveType: 'Full' | 'Partial' =
-      weight >= selectedDeliveryBatch.availableKg - 0.01 ? 'Full' : deliveryMode;
-
-    setIsSubmittingDel(true);
-    try {
-      await createFabricDelivery({
-        receivingId: selectedDeliveryBatch.id,
-        supplyNo: delForm.supplyNo.trim(),
-        buyer: selectedDeliveryBatch.buyer,
-        po: selectedDeliveryBatch.po,
-        style: selectedDeliveryBatch.style || '',
-        itemName: selectedDeliveryBatch.itemName || '',
-        fileNo: selectedDeliveryBatch.fileNo || '',
-        shipDate: selectedDeliveryBatch.shipDate || '',
-        rackCode: selectedDeliveryBatch.rackCode,
-        fabricType: selectedDeliveryBatch.fabricType,
-        color: selectedDeliveryBatch.color,
-        gsm: selectedDeliveryBatch.gsm || '',
-        lotNo: selectedDeliveryBatch.lotNo,
-        deliveryType: effectiveType,
-        weightKg: Number(weight.toFixed(2)),
-        rollCount: parseInt(delForm.rollCount || '0', 10) || 0,
-        issuedTo: delForm.issuedTo.trim(),
-        receiverName: delForm.receiverName.trim(),
-        deliveryDate: delForm.deliveryDate || todayISO(),
-        remark: delForm.remark.trim(),
+    const supplyGroupId = `sup_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const payloadItems: Array<Omit<FabricDelivery, 'id' | 'createdAt'>> = params.lines.map(
+      ({ batch, mode, weightKg, rollCount }) => ({
+        receivingId: batch.id,
+        supplyNo: params.supplyNo,
+        supplyGroupId,
+        buyer: batch.buyer,
+        po: batch.po,
+        style: batch.style || '',
+        itemName: batch.itemName || '',
+        fileNo: batch.fileNo || '',
+        shipDate: batch.shipDate || '',
+        rackCode: batch.rackCode,
+        fabricType: batch.fabricType,
+        color: batch.color,
+        gsm: batch.gsm || '',
+        lotNo: batch.lotNo,
+        deliveryType: mode,
+        weightKg,
+        rollCount,
+        issuedTo: params.issuedTo,
+        receiverName: params.receiverName,
+        deliveryDate: params.deliveryDate,
+        remark: params.remark,
         createdBy: currentUser.username,
-      });
+      })
+    );
+
+    try {
+      await createFabricDeliveryBatch(payloadItems);
+      const totalKg = payloadItems.reduce((s, item) => s + item.weightKg, 0);
+      const uniquePos = Array.from(new Set(payloadItems.map((i) => i.po)));
+      const uniqueRacks = Array.from(new Set(payloadItems.map((i) => i.rackCode)));
 
       await logFabricAudit({
-        action: `Fabric ${effectiveType} Delivery`,
+        action: 'Issued Multi-PO Supply',
         module: 'Delivery',
-        details: `Supply ${delForm.supplyNo}: ${weight.toFixed(2)} kg (${effectiveType}) for PO ${selectedDeliveryBatch.po} Lot ${selectedDeliveryBatch.lotNo} to ${delForm.issuedTo}`,
+        details: `Supply ${params.supplyNo}: ${totalKg.toFixed(2)} kg across ${uniquePos.length} PO(s) [${uniquePos.join(', ')}] & Racks [${uniqueRacks.join(', ')}] to ${params.issuedTo}`,
         actorUsername: currentUser.username,
         actorRole: currentUser.role,
       });
 
       showToast(
         'success',
-        `${effectiveType} delivery ${delForm.supplyNo} (${weight.toFixed(2)} kg) recorded for PO ${selectedDeliveryBatch.po}.`
+        `Issued Supply ${params.supplyNo}: ${fmtKg(totalKg)} kg across ${uniquePos.length} PO(s) & ${uniqueRacks.length} Rack(s).`
       );
-      setSelectedBatchIdForDelivery(null);
-      setDelForm((prev) => ({
-        ...prev,
-        supplyNo: '',
-        weightKg: '',
-        rollCount: '',
-        receiverName: '',
-        remark: '',
-      }));
+      return true;
     } catch (err: any) {
-      showToast('error', err?.message || 'Failed to record fabric delivery.');
-    } finally {
-      setIsSubmittingDel(false);
+      showToast('error', err?.message || 'Failed to record fabric delivery batch.');
+      return false;
     }
   };
 
@@ -1393,30 +1363,15 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
       await logFabricAudit({
         action: 'Deleted Delivery',
         module: 'Delivery',
-        details: `Reversed supply ${del.supplyNo} (${del.weightKg} kg) for PO ${del.po}`,
+        details: `Reversed supply ${del.supplyNo} (${del.weightKg} kg) for PO ${del.po} Rack ${del.rackCode || '-'}`,
         actorUsername: currentUser.username,
         actorRole: currentUser.role,
       });
-      showToast('success', `Supply ${del.supplyNo} removed and stock restored.`);
+      showToast('success', `Supply ${del.supplyNo} line removed and stock restored.`);
     } catch (err: any) {
       showToast('error', err?.message || 'Delete failed.');
     }
   };
-
-  const filteredDeliveriesHistory = useMemo(() => {
-    const q = delHistorySearch.trim().toLowerCase();
-    if (!q) return deliveries;
-    return deliveries.filter(
-      (d) =>
-        d.supplyNo.toLowerCase().includes(q) ||
-        d.po.toLowerCase().includes(q) ||
-        d.buyer.toLowerCase().includes(q) ||
-        (d.style || '').toLowerCase().includes(q) ||
-        (d.lotNo || '').toLowerCase().includes(q) ||
-        d.issuedTo.toLowerCase().includes(q) ||
-        (d.receiverName || '').toLowerCase().includes(q)
-    );
-  }, [deliveries, delHistorySearch]);
 
   // ============================================================================
   // PO LEDGER FILTER
@@ -1448,6 +1403,78 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
   const [isCreatingUser, setIsCreatingUser] = useState(false);
   const [resetPwdUser, setResetPwdUser] = useState<FabricUser | null>(null);
   const [resetPwdValue, setResetPwdValue] = useState('');
+  const [permModalUser, setPermModalUser] = useState<FabricUser | null>(null);
+
+  const handleSaveRolePermissions = async (
+    role: FabricRole,
+    permissions: FabricPermissionMap
+  ) => {
+    if (!rolePerms?.canManageUsers || !currentUser) return;
+    const cfg = roleConfigs[role] || DEFAULT_ROLE_PERMISSIONS[role];
+    try {
+      await saveFabricRolePermissionConfig(
+        role,
+        cfg.label,
+        cfg.description,
+        permissions,
+        currentUser.username
+      );
+      await logFabricAudit({
+        action: 'Updated Role Permissions',
+        module: 'Permissions',
+        details: `Admin updated access permissions for role ${cfg.label}`,
+        actorUsername: currentUser.username,
+        actorRole: currentUser.role,
+      });
+      showToast('success', `Updated permissions for ${cfg.label}.`);
+    } catch (err: any) {
+      showToast('error', err?.message || 'Failed to update role permissions.');
+    }
+  };
+
+  const handleResetRoleDefaults = async (role: FabricRole) => {
+    if (!rolePerms?.canManageUsers || !currentUser) return;
+    const def = DEFAULT_ROLE_PERMISSIONS[role];
+    try {
+      await saveFabricRolePermissionConfig(
+        role,
+        def.label,
+        def.description,
+        def.permissions,
+        currentUser.username
+      );
+      await logFabricAudit({
+        action: 'Reset Role Permissions',
+        module: 'Permissions',
+        details: `Restored default permissions for role ${def.label}`,
+        actorUsername: currentUser.username,
+        actorRole: currentUser.role,
+      });
+      showToast('success', `Restored defaults for ${def.label}.`);
+    } catch (err: any) {
+      showToast('error', err?.message || 'Failed to reset permissions.');
+    }
+  };
+
+  const handleSaveUserCustomPermissions = async (
+    targetUser: FabricUser,
+    customPermissions: Partial<FabricPermissionMap>
+  ) => {
+    if (!rolePerms?.canManageUsers || !currentUser) return;
+    try {
+      await updateFabricUser(targetUser.id, { customPermissions }, targetUser);
+      await logFabricAudit({
+        action: 'Updated User Permissions',
+        module: 'Permissions',
+        details: `Updated custom permission overrides for @${targetUser.username} (${Object.keys(customPermissions).length} override(s))`,
+        actorUsername: currentUser.username,
+        actorRole: currentUser.role,
+      });
+      showToast('success', `Saved custom permissions for @${targetUser.username}.`);
+    } catch (err: any) {
+      showToast('error', err?.message || 'Failed to update user permissions.');
+    }
+  };
 
   const handleCreateUser = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1469,7 +1496,7 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
       await logFabricAudit({
         action: 'Created User Account',
         module: 'Users',
-        details: `Created @${newUserForm.username.toLowerCase()} with role ${ROLE_META[newUserForm.role].label}`,
+        details: `Created @${newUserForm.username.toLowerCase()} with role ${roleConfigs[newUserForm.role]?.label || newUserForm.role}`,
         actorUsername: currentUser.username,
         actorRole: currentUser.role,
       });
@@ -1503,11 +1530,11 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
       await logFabricAudit({
         action: 'Updated User Role',
         module: 'Users',
-        details: `Changed @${targetUser.username} role from ${ROLE_META[targetUser.role].label} to ${ROLE_META[newRole].label}`,
+        details: `Changed @${targetUser.username} role from ${roleConfigs[targetUser.role]?.label || targetUser.role} to ${roleConfigs[newRole]?.label || newRole}`,
         actorUsername: currentUser.username,
         actorRole: currentUser.role,
       });
-      showToast('success', `Updated @${targetUser.username} to ${ROLE_META[newRole].label}.`);
+      showToast('success', `Updated @${targetUser.username} to ${roleConfigs[newRole]?.label || newRole}.`);
     } catch (err: any) {
       showToast('error', err?.message || 'Role update failed.');
     }
@@ -1689,105 +1716,112 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
       )}
 
       {/* Top Store Workspace Header & Sub-Navigation */}
-      <div className="bg-white rounded-2xl border border-slate-200 p-4 md:p-5 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
-        <div>
+      <div className="bg-white rounded-2xl border border-slate-300 shadow-xs p-4 sm:p-5 flex flex-col xl:flex-row xl:items-center justify-between gap-4">
+        <div className="min-w-0">
           <div className="flex items-center gap-2.5 flex-wrap">
-            <h2 className="text-lg font-extrabold text-slate-900 tracking-tight">
+            <h2 className="text-lg sm:text-xl font-extrabold text-slate-900 tracking-tight">
               Fabric Receiving & Supply Management
             </h2>
             <span className="text-xs text-slate-400">·</span>
-            <span className={`text-xs font-bold px-2.5 py-0.5 rounded-md border ${rolePerms?.badgeClass}`}>
+            <span className={`text-xs font-extrabold px-2.5 py-0.5 rounded-md border ${rolePerms?.badgeClass}`}>
               {rolePerms?.label}
             </span>
+            {rolePerms?.hasCustomOverrides && (
+              <span className="text-[11px] font-extrabold px-2 py-0.5 rounded-md border border-blue-300 bg-blue-50 text-blue-800">
+                Custom Permissions
+              </span>
+            )}
           </div>
-          <p className="text-xs text-slate-500 mt-1">
-            Signed in as <span className="font-bold text-slate-800">{currentUser.fullName}</span> (@{currentUser.username}) · {rolePerms?.summary}
+          <p className="text-xs sm:text-[13px] text-slate-600 mt-1">
+            Signed in as <span className="font-extrabold text-slate-900">{currentUser.fullName}</span> (@{currentUser.username}) · {rolePerms?.summary}
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5 shrink-0 flex-wrap">
-          <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl border border-slate-200 overflow-x-auto">
-            <button
-              onClick={() => setActiveSubTab('racks')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 transition cursor-pointer flex items-center gap-1.5 ${
-                activeSubTab === 'racks'
-                  ? 'bg-white text-slate-900 shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <Warehouse size={14} />
-              <span>Rack Stock</span>
-            </button>
+        <div className="flex items-center gap-2.5 shrink-0 w-full xl:w-auto">
+          <div className="flex-1 xl:flex-initial flex items-center gap-1 p-1 bg-slate-100 rounded-xl border border-slate-300 overflow-x-auto scrollbar-none">
+            {rolePerms?.canViewRacks && (
+              <button
+                onClick={() => setActiveSubTab('racks')}
+                className={`min-h-[40px] px-3 py-2 rounded-lg text-xs sm:text-[13px] font-bold whitespace-nowrap shrink-0 transition cursor-pointer flex items-center gap-1.5 ${
+                  activeSubTab === 'racks'
+                    ? 'bg-white text-slate-900 shadow-2xs border border-slate-300'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Warehouse size={15} />
+                <span>Rack Stock</span>
+              </button>
+            )}
 
             <button
               onClick={() => setActiveSubTab('requirements')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 transition cursor-pointer flex items-center gap-1.5 ${
+              className={`min-h-[40px] px-3 py-2 rounded-lg text-xs sm:text-[13px] font-bold whitespace-nowrap shrink-0 transition cursor-pointer flex items-center gap-1.5 ${
                 activeSubTab === 'requirements'
-                  ? 'bg-white text-slate-900 shadow-2xs'
+                  ? 'bg-white text-slate-900 shadow-2xs border border-slate-300'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <BookmarkCheck size={14} />
+              <BookmarkCheck size={15} />
               <span>Fabric Booking</span>
             </button>
 
             <button
               onClick={() => setActiveSubTab('receiving')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 transition cursor-pointer flex items-center gap-1.5 ${
+              className={`min-h-[40px] px-3 py-2 rounded-lg text-xs sm:text-[13px] font-bold whitespace-nowrap shrink-0 transition cursor-pointer flex items-center gap-1.5 ${
                 activeSubTab === 'receiving'
-                  ? 'bg-white text-slate-900 shadow-2xs'
+                  ? 'bg-white text-slate-900 shadow-2xs border border-slate-300'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <PackagePlus size={14} />
+              <PackagePlus size={15} />
               <span>Receiving (Challan)</span>
             </button>
 
             <button
               onClick={() => setActiveSubTab('delivery')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 transition cursor-pointer flex items-center gap-1.5 ${
+              className={`min-h-[40px] px-3 py-2 rounded-lg text-xs sm:text-[13px] font-bold whitespace-nowrap shrink-0 transition cursor-pointer flex items-center gap-1.5 ${
                 activeSubTab === 'delivery'
-                  ? 'bg-white text-slate-900 shadow-2xs'
+                  ? 'bg-white text-slate-900 shadow-2xs border border-slate-300'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <Truck size={14} />
+              <Truck size={15} />
               <span>Delivery</span>
             </button>
 
             <button
               onClick={() => setActiveSubTab('ledger')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 transition cursor-pointer flex items-center gap-1.5 ${
+              className={`min-h-[40px] px-3 py-2 rounded-lg text-xs sm:text-[13px] font-bold whitespace-nowrap shrink-0 transition cursor-pointer flex items-center gap-1.5 ${
                 activeSubTab === 'ledger'
-                  ? 'bg-white text-slate-900 shadow-2xs'
+                  ? 'bg-white text-slate-900 shadow-2xs border border-slate-300'
                   : 'text-slate-600 hover:text-slate-900'
               }`}
             >
-              <ClipboardList size={14} />
+              <ClipboardList size={15} />
               <span>PO Balance</span>
             </button>
 
             {rolePerms?.canManageUsers && (
               <button
                 onClick={() => setActiveSubTab('users')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap shrink-0 transition cursor-pointer flex items-center gap-1.5 ${
+                className={`min-h-[40px] px-3 py-2 rounded-lg text-xs sm:text-[13px] font-bold whitespace-nowrap shrink-0 transition cursor-pointer flex items-center gap-1.5 ${
                   activeSubTab === 'users'
                     ? 'bg-slate-900 text-white shadow-2xs'
                     : 'text-slate-700 hover:text-slate-900'
                 }`}
               >
-                <Users size={14} />
-                <span>Users & Roles</span>
+                <Users size={15} />
+                <span>Admin & Permissions</span>
               </button>
             )}
           </div>
 
           <button
             onClick={handleSignOut}
-            className="px-3 py-2 rounded-xl border border-slate-300 bg-white hover:bg-rose-50 hover:text-rose-700 hover:border-rose-300 text-slate-700 text-xs font-bold transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            className="min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-300 bg-white hover:bg-rose-50 hover:text-rose-700 hover:border-rose-300 text-slate-800 text-xs sm:text-[13px] font-bold transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0"
             title="Lock Fabric Store session"
           >
-            <LogOut size={14} />
+            <LogOut size={15} />
             <span>Lock</span>
           </button>
         </div>
@@ -1796,404 +1830,74 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
       {/* ======================================================================== */}
       {/* SUB-TAB 1: MODERN RACK-WISE FABRIC STOCK SUMMARY (Home Rack Page)        */}
       {/* ======================================================================== */}
-      {activeSubTab === 'racks' && (
-        <div className="space-y-5">
-          {/* Warehouse Architectural Hero Strip */}
-          <div className="bg-slate-900 text-white rounded-2xl border border-slate-800 p-5 md:p-6">
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
-              <div className="lg:col-span-5 space-y-2">
-                <p className="text-xs font-semibold text-slate-400">
-                  Warehouse Live Overview · {overallTotals.totalRacks} Active Racks
-                </p>
-                <div className="flex items-baseline gap-3">
-                  <span className="text-3xl md:text-4xl font-extrabold font-mono tabular-nums tracking-tight text-white">
-                    {fmtKg(overallTotals.availableStockKg)}
-                  </span>
-                  <span className="text-sm font-semibold text-slate-300">
-                    kg in stock
-                  </span>
-                </div>
-                <p className="text-xs text-slate-400 font-mono tabular-nums">
-                  Free Space: <span className="text-emerald-400 font-bold">{fmtKg(overallTotals.totalFreeKg)} kg</span>
-                  <span className="mx-2 text-slate-600">/</span>
-                  Total Capacity: <span className="text-slate-200">{fmtKg(overallTotals.totalCapacityKg)} kg</span> ({overallTotals.warehouseFillPct}% occupied)
-                </p>
-
-                <div className="grid grid-cols-3 gap-3 pt-3 border-t border-slate-800 text-xs">
-                  <div>
-                    <span className="text-slate-400 block">Received</span>
-                    <span className="font-mono tabular-nums font-bold text-emerald-400 text-sm">
-                      {fmtKg(overallTotals.totalReceivedKg)} kg
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 block">Delivered</span>
-                    <span className="font-mono tabular-nums font-bold text-sky-400 text-sm">
-                      {fmtKg(overallTotals.totalDeliveredKg)} kg
-                    </span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 block">Active Lots / POs</span>
-                    <span className="font-mono tabular-nums font-bold text-white text-sm">
-                      {overallTotals.activeLots} / {overallTotals.activePoCount}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Zone-by-Zone Capacity Bars */}
-              <div className="lg:col-span-7 grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {zoneStats.map((zs) => {
-                  const isSelected = rackZoneFilter === zs.zone;
-                  return (
-                    <button
-                      key={zs.zone}
-                      type="button"
-                      onClick={() =>
-                        setRackZoneFilter((prev) => (prev === zs.zone ? 'ALL' : zs.zone))
-                      }
-                      className={`text-left p-3.5 rounded-xl border transition cursor-pointer ${
-                        isSelected
-                          ? 'bg-slate-800 border-emerald-400'
-                          : 'bg-slate-800/50 border-slate-700/80 hover:border-slate-500'
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-2 mb-2">
-                        <span className="text-xs font-bold text-white truncate">{zs.zone}</span>
-                        <span className="text-xs font-mono tabular-nums font-bold text-emerald-400 shrink-0">
-                          {zs.pct}%
-                        </span>
-                      </div>
-                      <div className="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden mb-2">
-                        <div
-                          className={`h-full rounded-full ${
-                            zs.pct >= 90 ? 'bg-rose-500' : zs.pct >= 65 ? 'bg-amber-400' : 'bg-emerald-400'
-                          }`}
-                          style={{ width: `${zs.pct}%` }}
-                        />
-                      </div>
-                      <div className="flex items-center justify-between text-[11px] font-mono tabular-nums text-slate-300">
-                        <span>{fmtKg(zs.stockKg)} kg</span>
-                        <span className="text-slate-400">{zs.racksCount} racks</span>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
-          {/* Search, Zone Filter, View Toggle & Add Rack Toolbar */}
-          <div className="bg-white p-4 rounded-2xl border border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
-            <div className="flex flex-1 items-center gap-2.5 flex-wrap">
-              <div className="relative flex-1 min-w-[220px]">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                <input
-                  type="text"
-                  value={rackSearch}
-                  onChange={(e) => setRackSearch(e.target.value)}
-                  placeholder="Search rack code, PO, buyer, style, color, or lot..."
-                  className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                />
-              </div>
-
-              <select
-                value={rackZoneFilter}
-                onChange={(e) => setRackZoneFilter(e.target.value)}
-                className="px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 outline-none"
-              >
-                <option value="ALL">All Zones ({racks.length})</option>
-                {rackZones.map((z) => (
-                  <option key={z} value={z}>
-                    {z}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex items-center gap-2 shrink-0 flex-wrap">
-              <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
-                <button
-                  onClick={() => setRackViewMode('grid')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer ${
-                    rackViewMode === 'grid' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600'
-                  }`}
-                >
-                  <LayoutGrid size={13} />
-                  <span>Grid</span>
-                </button>
-                <button
-                  onClick={() => setRackViewMode('table')}
-                  className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 cursor-pointer ${
-                    rackViewMode === 'table' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-600'
-                  }`}
-                >
-                  <TableIcon size={13} />
-                  <span>Table</span>
-                </button>
-              </div>
-
-              <button
-                onClick={() =>
-                  exportCsvFile(
-                    `rack_stock_summary_${todayISO()}.csv`,
-                    ['Rack Code', 'Zone', 'Capacity (kg)', 'Current Stock (kg)', 'Free Space (kg)', 'Fill %', 'Active Lots', 'Received (kg)', 'Delivered (kg)', 'Buyers', 'POs'],
-                    filteredRackSummaries.map((s) => [
-                      s.rack.code,
-                      s.rack.zone,
-                      s.rack.capacityKg,
-                      s.currentKg.toFixed(2),
-                      s.freeCapacityKg.toFixed(2),
-                      `${s.utilizationPct}%`,
-                      s.activeBatches.length,
-                      s.receivedKg.toFixed(2),
-                      s.deliveredKg.toFixed(2),
-                      s.buyers.join(' | '),
-                      s.pos.join(' | '),
-                    ])
-                  )
-                }
-                className="px-3 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-700 text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-              >
-                <Download size={14} />
-                <span>CSV</span>
-              </button>
-
-              {rolePerms?.canManageRacks && (
-                <button
-                  onClick={() => {
-                    setRackForm({
-                      id: '',
-                      code: '',
-                      zone: rackZones[0] || 'Zone A (Knit Jersey)',
-                      capacityKg: '2500',
-                      description: '',
-                    });
-                    setShowRackFormModal(true);
-                  }}
-                  className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Plus size={14} />
-                  <span>Add Rack</span>
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* Rack Cards or Compact Matrix Table */}
-          {filteredRackSummaries.length === 0 ? (
-            <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center text-slate-500 text-sm">
-              No racks match your current filter.
-            </div>
-          ) : rackViewMode === 'grid' ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-              {filteredRackSummaries.map((item) => {
-                const hasStock = item.currentKg > 0.009;
-                const isNearFull = item.utilizationPct >= 90;
-                const isMedium = item.utilizationPct >= 65 && item.utilizationPct < 90;
-                const ringColor = isNearFull
-                  ? '#e11d48'
-                  : isMedium
-                  ? '#d97706'
-                  : hasStock
-                  ? '#059669'
-                  : '#cbd5e1';
-                const radius = 18;
-                const circumference = 2 * Math.PI * radius;
-                const dashOffset = circumference - (item.utilizationPct / 100) * circumference;
-
-                return (
-                  <button
-                    key={item.rack.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedRackId(item.rack.id);
-                      setRackDetailShowExhausted(false);
-                      setTransferBatchId(null);
-                    }}
-                    className={`group text-left bg-white rounded-2xl border transition cursor-pointer overflow-hidden flex flex-col justify-between ${
-                      hasStock
-                        ? 'border-slate-300 hover:border-slate-900 hover:shadow-md'
-                        : 'border-slate-200 hover:border-slate-400'
-                    }`}
-                  >
-                    <div>
-                      {/* Card Top Strip */}
-                      <div
-                        className={`px-4 py-3.5 flex items-center justify-between gap-2 border-b ${
-                          hasStock
-                            ? 'bg-slate-900 text-white border-slate-800'
-                            : 'bg-slate-50 text-slate-800 border-slate-200'
-                        }`}
-                      >
-                        <div className="min-w-0">
-                          <div className="flex items-center gap-2">
-                            <span className="text-base font-extrabold font-mono tracking-tight">
-                              Rack {item.rack.code}
-                            </span>
-                            <span
-                              className={`text-[11px] font-bold ${
-                                isNearFull
-                                  ? 'text-rose-300'
-                                  : hasStock
-                                  ? 'text-emerald-300'
-                                  : 'text-slate-400'
-                              }`}
-                            >
-                              {isNearFull ? 'Near Full' : hasStock ? 'Active' : 'Empty'}
-                            </span>
-                          </div>
-                          <p
-                            className={`text-xs truncate mt-0.5 ${
-                              hasStock ? 'text-slate-300' : 'text-slate-500'
-                            }`}
-                          >
-                            {item.rack.zone}
-                          </p>
-                        </div>
-
-                        {/* Circular Capacity Gauge */}
-                        <div className="relative h-11 w-11 shrink-0 flex items-center justify-center">
-                          <svg className="h-11 w-11 -rotate-90" viewBox="0 0 44 44">
-                            <circle
-                              cx="22"
-                              cy="22"
-                              r={radius}
-                              fill="none"
-                              stroke={hasStock ? '#334155' : '#e2e8f0'}
-                              strokeWidth="4"
-                            />
-                            <circle
-                              cx="22"
-                              cy="22"
-                              r={radius}
-                              fill="none"
-                              stroke={ringColor}
-                              strokeWidth="4"
-                              strokeDasharray={circumference}
-                              strokeDashoffset={dashOffset}
-                              strokeLinecap="round"
-                            />
-                          </svg>
-                          <span
-                            className={`absolute text-[10px] font-mono font-extrabold tabular-nums ${
-                              hasStock ? 'text-white' : 'text-slate-500'
-                            }`}
-                          >
-                            {item.utilizationPct}%
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Metric Grid */}
-                      <div className="p-4 space-y-3">
-                        <div className="grid grid-cols-3 gap-2 pb-3 border-b border-slate-100 text-xs">
-                          <div>
-                            <span className="text-slate-500 block">In Stock</span>
-                            <span className="text-sm font-extrabold text-slate-900 font-mono tabular-nums">
-                              {fmtKg(item.currentKg)}
-                            </span>
-                          </div>
-                          <div>
-                            <span className="text-slate-500 block">Free Cap.</span>
-                            <span
-                              className={`text-sm font-bold font-mono tabular-nums ${
-                                item.freeCapacityKg < 300 && hasStock ? 'text-rose-700' : 'text-emerald-700'
-                              }`}
-                            >
-                              {fmtKg(item.freeCapacityKg)}
-                            </span>
-                          </div>
-                          <div className="text-right">
-                            <span className="text-slate-500 block">Lots</span>
-                            <span className="text-sm font-extrabold text-slate-900 font-mono tabular-nums">
-                              {item.activeBatches.length}
-                            </span>
-                          </div>
-                        </div>
-
-                        <div className="space-y-1.5 text-xs">
-                          <div className="flex items-center justify-between text-slate-600">
-                            <span className="text-slate-500">Buyers:</span>
-                            <span className="font-bold text-slate-800 truncate max-w-[160px]">
-                              {item.buyers.length > 0 ? item.buyers.join(', ') : '-'}
-                            </span>
-                          </div>
-                          <div className="flex items-center justify-between text-slate-600">
-                            <span className="text-slate-500">POs:</span>
-                            <span className="font-mono font-bold text-slate-800 truncate max-w-[160px]">
-                              {item.pos.length > 0
-                                ? `${item.pos.slice(0, 2).join(', ')}${item.pos.length > 2 ? ` +${item.pos.length - 2}` : ''}`
-                                : 'None'}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="px-4 py-2.5 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-xs font-bold text-slate-700 group-hover:text-blue-700">
-                      <span>Open Stock Details & Split</span>
-                      <span>→</span>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead className="bg-slate-100 text-slate-700 uppercase font-bold">
-                    <tr>
-                      <th className="p-3 border-b border-slate-200">Rack</th>
-                      <th className="p-3 border-b border-slate-200">Zone</th>
-                      <th className="p-3 border-b border-slate-200 text-right">Active Lots</th>
-                      <th className="p-3 border-b border-slate-200 text-right">In Stock (kg)</th>
-                      <th className="p-3 border-b border-slate-200 text-right">Free Cap (kg)</th>
-                      <th className="p-3 border-b border-slate-200 text-right">Fill %</th>
-                      <th className="p-3 border-b border-slate-200">Buyers / POs</th>
-                      <th className="p-3 border-b border-slate-200 text-center">Details</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {filteredRackSummaries.map((item) => (
-                      <tr
-                        key={item.rack.id}
-                        onClick={() => {
-                          setSelectedRackId(item.rack.id);
-                          setRackDetailShowExhausted(false);
-                          setTransferBatchId(null);
-                        }}
-                        className="hover:bg-slate-50 cursor-pointer"
-                      >
-                        <td className="p-3 font-mono font-extrabold text-slate-900">
-                          Rack {item.rack.code}
-                        </td>
-                        <td className="p-3 text-slate-600">{item.rack.zone}</td>
-                        <td className="p-3 text-right font-mono tabular-nums font-bold">
-                          {item.activeBatches.length}
-                        </td>
-                        <td className="p-3 text-right font-mono tabular-nums font-extrabold text-slate-900">
-                          {fmtKg(item.currentKg)}
-                        </td>
-                        <td className="p-3 text-right font-mono tabular-nums font-bold text-emerald-700">
-                          {fmtKg(item.freeCapacityKg)}
-                        </td>
-                        <td className="p-3 text-right font-mono tabular-nums font-bold">
-                          {item.utilizationPct}%
-                        </td>
-                        <td className="p-3 text-slate-700 truncate max-w-[240px]">
-                          {item.pos.length > 0 ? `${item.buyers.join(', ')} · ${item.pos.join(', ')}` : 'Empty'}
-                        </td>
-                        <td className="p-3 text-center font-bold text-blue-700">View →</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          )}
+      {activeSubTab === 'racks' && !rolePerms?.canViewRacks && (
+        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-5 text-[13px] font-semibold text-amber-900">
+          Your role ({rolePerms?.label}) does not have permission to view Rack Stock Summary. Use the tabs above to access your permitted sections.
         </div>
+      )}
+
+      {activeSubTab === 'racks' && rolePerms?.canViewRacks && (
+        <RackStockSection
+          overallTotals={overallTotals}
+          zoneStats={zoneStats}
+          rackZones={rackZones}
+          totalRacksCount={racks.length}
+          filteredRackSummaries={filteredRackSummaries}
+          rackSearch={rackSearch}
+          onRackSearchChange={setRackSearch}
+          rackZoneFilter={rackZoneFilter}
+          onRackZoneFilterChange={setRackZoneFilter}
+          canExport={Boolean(rolePerms?.canExport)}
+          canManageRacks={Boolean(rolePerms?.canManageRacks)}
+          onExportCsv={() =>
+            exportCsvFile(
+              `rack_stock_summary_${todayISO()}.csv`,
+              [
+                'Rack Code',
+                'Zone',
+                'Capacity (kg)',
+                'Current Stock (kg)',
+                'Free Space (kg)',
+                'Fill %',
+                'Active Lots',
+                'Received (kg)',
+                'Delivered (kg)',
+                'Buyers',
+                'POs',
+              ],
+              filteredRackSummaries.map((s) => [
+                s.rack.code,
+                s.rack.zone,
+                s.rack.capacityKg,
+                s.currentKg.toFixed(2),
+                s.freeCapacityKg.toFixed(2),
+                `${s.utilizationPct}%`,
+                s.activeBatches.length,
+                s.receivedKg.toFixed(2),
+                s.deliveredKg.toFixed(2),
+                s.buyers.join(' | '),
+                s.pos.join(' | '),
+              ])
+            )
+          }
+          onAddRack={() => {
+            setRackForm({
+              id: '',
+              code: '',
+              zone: rackZones[0] || 'Zone A (Knit Jersey)',
+              capacityKg: '2500',
+              description: '',
+            });
+            setShowRackFormModal(true);
+          }}
+          onSelectRack={(rackId) => {
+            setSelectedRackId(rackId);
+            setRackDetailShowExhausted(false);
+            setTransferBatchId(null);
+          }}
+          onOpenRackQr={(item) => setQrModalRack(item)}
+          onOpenBulkQrPrint={() => setShowBulkQrModal(true)}
+        />
       )}
 
       {/* ======================================================================== */}
@@ -2201,7 +1905,7 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
       {/* ======================================================================== */}
       {activeSubTab === 'requirements' && (
         <div className="space-y-6">
-          {rolePerms?.canReceive ? (
+          {rolePerms?.canBook ? (
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
               {/* Pick PO from All Buyers */}
               <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
@@ -2442,13 +2146,13 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
           ) : null}
 
           {/* Booked Fabric Requirements List */}
-          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-            <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="bg-white rounded-2xl border border-slate-300 shadow-xs overflow-hidden">
+            <div className="p-4 md:p-5 border-b border-slate-300 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-extrabold text-slate-900">PO Fabric Booking & Fulfillment Tracker</h3>
-                <p className="text-xs text-slate-500">{filteredRequirementsTable.length} requirement entry(ies)</p>
+                <h3 className="text-base font-extrabold text-slate-900">PO Fabric Booking & Fulfillment Tracker</h3>
+                <p className="text-xs text-slate-600 mt-0.5">{filteredRequirementsTable.length} requirement entry(ies)</p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2.5">
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
                   <input
@@ -2456,50 +2160,52 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
                     value={reqTableSearch}
                     onChange={(e) => setReqTableSearch(e.target.value)}
                     placeholder="Search PO, Buyer, Color..."
-                    className="pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
+                    className="pl-8 pr-3 py-1.5 bg-white border border-slate-300 rounded-xl text-[13px] outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
-                <button
-                  onClick={() =>
-                    exportCsvFile(
-                      `fabric_requirements_${todayISO()}.csv`,
-                      ['Buyer', 'PO', 'Style', 'Item', 'Ship Date', 'Fabric Type', 'Color', 'GSM', 'Required (kg)', 'Received (kg)', 'Pending (kg)', 'Supplier'],
-                      filteredRequirementsTable.map((r) => [
-                        r.buyer,
-                        r.po,
-                        r.style || '',
-                        r.itemName || '',
-                        r.shipDate || '',
-                        r.fabricType,
-                        r.color,
-                        r.gsm || '',
-                        r.requiredQtyKg.toFixed(2),
-                        r.receivedKg.toFixed(2),
-                        r.pendingKg.toFixed(2),
-                        r.supplier || '',
-                      ])
-                    )
-                  }
-                  className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700 flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Download size={13} />
-                  <span>CSV</span>
-                </button>
+                {rolePerms?.canExport && (
+                  <button
+                    onClick={() =>
+                      exportCsvFile(
+                        `fabric_requirements_${todayISO()}.csv`,
+                        ['Buyer', 'PO', 'Style', 'Item', 'Ship Date', 'Fabric Type', 'Color', 'GSM', 'Required (kg)', 'Received (kg)', 'Pending (kg)', 'Supplier'],
+                        filteredRequirementsTable.map((r) => [
+                          r.buyer,
+                          r.po,
+                          r.style || '',
+                          r.itemName || '',
+                          r.shipDate || '',
+                          r.fabricType,
+                          r.color,
+                          r.gsm || '',
+                          r.requiredQtyKg.toFixed(2),
+                          r.receivedKg.toFixed(2),
+                          r.pendingKg.toFixed(2),
+                          r.supplier || '',
+                        ])
+                      )
+                    }
+                    className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-xs font-bold text-slate-800 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Download size={13} />
+                    <span>CSV</span>
+                  </button>
+                )}
               </div>
             </div>
 
             <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead className="bg-slate-100 text-slate-700 uppercase font-bold">
+              <table className="w-full text-left border-collapse text-[13px]">
+                <thead className="bg-slate-100 text-slate-800 uppercase text-xs font-extrabold">
                   <tr>
-                    <th className="p-3 border-b border-slate-200">Buyer / PO / Style</th>
-                    <th className="p-3 border-b border-slate-200">Fabric Type / Color / GSM</th>
-                    <th className="p-3 border-b border-slate-200">Supplier</th>
-                    <th className="p-3 border-b border-slate-200 text-right">Required</th>
-                    <th className="p-3 border-b border-slate-200 text-right">Received</th>
-                    <th className="p-3 border-b border-slate-200 text-right">Pending</th>
-                    <th className="p-3 border-b border-slate-200">Progress</th>
-                    <th className="p-3 border-b border-slate-200 text-center">Actions</th>
+                    <th className="p-3.5 border-b border-r border-slate-300">Buyer / PO / Style</th>
+                    <th className="p-3.5 border-b border-r border-slate-300">Fabric Type / Color / GSM</th>
+                    <th className="p-3.5 border-b border-r border-slate-300">Supplier</th>
+                    <th className="p-3.5 border-b border-r border-slate-300 text-right">Required</th>
+                    <th className="p-3.5 border-b border-r border-slate-300 text-right">Received</th>
+                    <th className="p-3.5 border-b border-r border-slate-300 text-right">Pending</th>
+                    <th className="p-3.5 border-b border-r border-slate-300">Progress</th>
+                    <th className="p-3.5 border-b border-slate-300 text-center">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-200">
@@ -2544,7 +2250,7 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
                         </td>
                         <td className="p-3 text-center whitespace-nowrap">
                           <div className="flex items-center justify-center gap-1.5">
-                            {rolePerms?.canReceive && (
+                            {rolePerms?.canBook && (
                               <button
                                 onClick={() => {
                                   setEditingReq(r);
@@ -3248,21 +2954,21 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
           )}
 
           {/* Receiving Register (Grouped By Challan OR Flat Line Items) */}
-          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-            <div className="p-4 border-b border-slate-200 flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="bg-white rounded-2xl border border-slate-300 shadow-xs overflow-hidden">
+            <div className="p-4 md:p-5 border-b border-slate-300 bg-slate-50 flex flex-col md:flex-row md:items-center justify-between gap-3">
               <div>
-                <h3 className="text-sm font-extrabold text-slate-900">Fabric Receiving Register</h3>
-                <p className="text-xs text-slate-500">
+                <h3 className="text-base font-extrabold text-slate-900">Fabric Receiving Register</h3>
+                <p className="text-xs text-slate-600 mt-0.5">
                   {challanGroups.length} Challan(s) · {filteredReceivingsLedger.length} Rack Batch Entry(ies)
                 </p>
               </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-200">
+              <div className="flex items-center gap-2.5 flex-wrap">
+                <div className="flex items-center bg-white p-1 rounded-xl border border-slate-300">
                   <button
                     onClick={() => setRecRegisterView('challan')}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer flex items-center gap-1 ${
+                    className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer flex items-center gap-1 ${
                       recRegisterView === 'challan'
-                        ? 'bg-white text-slate-900 shadow-2xs'
+                        ? 'bg-slate-900 text-white'
                         : 'text-slate-600'
                     }`}
                   >
@@ -3271,9 +2977,9 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
                   </button>
                   <button
                     onClick={() => setRecRegisterView('items')}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer flex items-center gap-1 ${
+                    className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer flex items-center gap-1 ${
                       recRegisterView === 'items'
-                        ? 'bg-white text-slate-900 shadow-2xs'
+                        ? 'bg-slate-900 text-white'
                         : 'text-slate-600'
                     }`}
                   >
@@ -3289,41 +2995,43 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
                     value={recLedgerSearch}
                     onChange={(e) => setRecLedgerSearch(e.target.value)}
                     placeholder="Filter challan, PO, lot..."
-                    className="pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
+                    className="pl-8 pr-3 py-1.5 bg-white border border-slate-300 rounded-xl text-[13px] outline-none focus:ring-2 focus:ring-blue-500"
                   />
                 </div>
 
-                <button
-                  onClick={() =>
-                    exportCsvFile(
-                      `fabric_receiving_register_${todayISO()}.csv`,
-                      ['Date', 'Challan', 'Supplier', 'Rack', 'Buyer', 'PO', 'Style', 'Ship Date', 'Fabric Type', 'Color', 'GSM', 'Lot', 'Required (kg)', 'Received (kg)', 'Delivered (kg)', 'Balance (kg)', 'Remark'],
-                      filteredReceivingsLedger.map((r) => [
-                        r.receiveDate,
-                        r.challanNo,
-                        r.supplier,
-                        r.rackCode,
-                        r.buyer,
-                        r.po,
-                        r.style || '',
-                        r.shipDate || '',
-                        r.fabricType,
-                        r.color,
-                        r.gsm || '',
-                        r.lotNo,
-                        (r.requiredQtyKg || 0).toFixed(2),
-                        r.weightKg.toFixed(2),
-                        r.deliveredKg.toFixed(2),
-                        r.availableKg.toFixed(2),
-                        r.remark || '',
-                      ])
-                    )
-                  }
-                  className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700 flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Download size={13} />
-                  <span>CSV</span>
-                </button>
+                {rolePerms?.canExport && (
+                  <button
+                    onClick={() =>
+                      exportCsvFile(
+                        `fabric_receiving_register_${todayISO()}.csv`,
+                        ['Date', 'Challan', 'Supplier', 'Rack', 'Buyer', 'PO', 'Style', 'Ship Date', 'Fabric Type', 'Color', 'GSM', 'Lot', 'Required (kg)', 'Received (kg)', 'Delivered (kg)', 'Balance (kg)', 'Remark'],
+                        filteredReceivingsLedger.map((r) => [
+                          r.receiveDate,
+                          r.challanNo,
+                          r.supplier,
+                          r.rackCode,
+                          r.buyer,
+                          r.po,
+                          r.style || '',
+                          r.shipDate || '',
+                          r.fabricType,
+                          r.color,
+                          r.gsm || '',
+                          r.lotNo,
+                          (r.requiredQtyKg || 0).toFixed(2),
+                          r.weightKg.toFixed(2),
+                          r.deliveredKg.toFixed(2),
+                          r.availableKg.toFixed(2),
+                          r.remark || '',
+                        ])
+                      )
+                    }
+                    className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-xs font-bold text-slate-800 flex items-center gap-1.5 cursor-pointer"
+                  >
+                    <Download size={13} />
+                    <span>CSV</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -3532,485 +3240,40 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
       )}
 
       {/* ======================================================================== */}
-      {/* SUB-TAB 4: FABRIC DELIVERY / SUPPLY (Call by PO Search, Full or Partial) */}
+      {/* SUB-TAB 4: MULTI-PO & MULTI-RACK FABRIC DELIVERY / SUPPLY                */}
       {/* ======================================================================== */}
       {activeSubTab === 'delivery' && (
-        <div className="space-y-6">
-          {rolePerms?.canDeliver ? (
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-              <div className="lg:col-span-6 bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
-                <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-slate-200">
-                  <div>
-                    <h3 className="text-sm font-extrabold text-slate-900">
-                      1. Search Stock by PO / Lot
-                    </h3>
-                    <p className="text-xs text-slate-500">
-                      Call received fabric batches for full or partial delivery
-                    </p>
-                  </div>
-                  <label className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={delShowExhausted}
-                      onChange={(e) => setDelShowExhausted(e.target.checked)}
-                      className="rounded border-slate-300"
-                    />
-                    <span>Show 0 kg lots</span>
-                  </label>
-                </div>
-
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
-                  <input
-                    type="text"
-                    value={delPoSearch}
-                    onChange={(e) => setDelPoSearch(e.target.value)}
-                    placeholder="Search by PO Number, Buyer, Style, Lot No, Color, Challan..."
-                    className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                  />
-                </div>
-
-                <div className="max-h-96 overflow-y-auto divide-y divide-slate-200 border border-slate-200 rounded-xl">
-                  {deliveryCandidateBatches.length === 0 ? (
-                    <div className="p-6 text-center text-xs text-slate-500">
-                      No available received fabric lots match "{delPoSearch}". Record receiving first.
-                    </div>
-                  ) : (
-                    deliveryCandidateBatches.map((batch) => {
-                      const isSelected = batch.id === selectedBatchIdForDelivery;
-                      return (
-                        <div
-                          key={batch.id}
-                          className={`p-3 transition ${isSelected ? 'bg-blue-50' : 'bg-white hover:bg-slate-50'}`}
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2 text-xs">
-                                <span className="font-extrabold text-slate-900 font-mono">PO {batch.po}</span>
-                                <span className="text-slate-400">·</span>
-                                <span className="font-bold text-blue-800">{batch.buyer}</span>
-                                <span className="text-slate-400">·</span>
-                                <span className="font-mono font-bold text-slate-700">Rack {batch.rackCode}</span>
-                              </div>
-                              <p className="text-xs font-semibold text-slate-800 mt-0.5">
-                                {batch.fabricType} · {batch.color} {batch.gsm ? `· ${batch.gsm}` : ''}
-                              </p>
-                              <p className="text-xs text-slate-500 font-mono mt-0.5">
-                                Lot {batch.lotNo} · Ch {batch.challanNo} · Bal:{' '}
-                                <strong className="text-emerald-700">{fmtKg(batch.availableKg)} kg</strong> /{' '}
-                                {fmtKg(batch.weightKg)} kg
-                              </p>
-                            </div>
-
-                            {batch.availableKg > 0.009 ? (
-                              <div className="flex items-center gap-1.5 shrink-0">
-                                <button
-                                  type="button"
-                                  onClick={() => selectBatchForDelivery(batch, 'Partial')}
-                                  className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold cursor-pointer"
-                                >
-                                  Partial
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => selectBatchForDelivery(batch, 'Full')}
-                                  className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer"
-                                >
-                                  Full
-                                </button>
-                              </div>
-                            ) : (
-                              <span className="text-xs font-bold text-slate-400 shrink-0">Exhausted</span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-
-              <form
-                onSubmit={handleCreateDelivery}
-                className="lg:col-span-6 bg-white rounded-2xl border border-slate-200 p-5 space-y-4"
-              >
-                <div className="pb-2.5 border-b border-slate-200">
-                  <h3 className="text-sm font-extrabold text-slate-900">
-                    2. Issue Fabric Delivery
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Assign Supply No, Full/Partial weight & cutting/line destination
-                  </p>
-                </div>
-
-                {!selectedDeliveryBatch ? (
-                  <div className="p-8 rounded-xl border border-dashed border-slate-300 text-center text-xs text-slate-500">
-                    Search a PO on the left and click <strong>Partial</strong> or <strong>Full</strong> to prepare a fabric delivery slip.
-                  </div>
-                ) : (
-                  <>
-                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 grid grid-cols-2 sm:grid-cols-3 gap-2.5 text-xs">
-                      <div>
-                        <span className="text-slate-500 block">PO / Buyer</span>
-                        <span className="font-extrabold text-slate-900 font-mono">
-                          {selectedDeliveryBatch.po} · {selectedDeliveryBatch.buyer}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-slate-500 block">Fabric / Color</span>
-                        <span className="font-bold text-slate-800">
-                          {selectedDeliveryBatch.fabricType} · {selectedDeliveryBatch.color}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-slate-500 block">Available Balance</span>
-                        <span className="font-extrabold text-emerald-700 font-mono">
-                          {fmtKg(selectedDeliveryBatch.availableKg)} kg
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-slate-500 block">Rack / Lot</span>
-                        <span className="font-mono font-bold text-slate-800">
-                          {selectedDeliveryBatch.rackCode} · {selectedDeliveryBatch.lotNo}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-slate-500 block">Style</span>
-                        <span className="font-bold text-slate-800 truncate block">
-                          {selectedDeliveryBatch.style || '-'}
-                        </span>
-                      </div>
-                      <div>
-                        <span className="text-slate-500 block">Ship Date</span>
-                        <span className="font-mono font-bold text-slate-800">
-                          {selectedDeliveryBatch.shipDate || '-'}
-                        </span>
-                      </div>
-                    </div>
-
-                    <div>
-                      <label className="block text-xs font-bold text-slate-700 mb-1.5">Delivery Type</label>
-                      <div className="grid grid-cols-2 gap-2 p-1 bg-slate-100 rounded-xl border border-slate-200">
-                        <button
-                          type="button"
-                          onClick={() => handleToggleDeliveryMode('Partial')}
-                          className={`py-2 rounded-lg text-xs font-bold cursor-pointer transition ${
-                            deliveryMode === 'Partial'
-                              ? 'bg-white text-amber-800 shadow-2xs'
-                              : 'text-slate-600 hover:text-slate-900'
-                          }`}
-                        >
-                          Partial Delivery
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => handleToggleDeliveryMode('Full')}
-                          className={`py-2 rounded-lg text-xs font-bold cursor-pointer transition ${
-                            deliveryMode === 'Full'
-                              ? 'bg-white text-emerald-800 shadow-2xs'
-                              : 'text-slate-600 hover:text-slate-900'
-                          }`}
-                        >
-                          Full Delivery ({fmtKg(selectedDeliveryBatch.availableKg)} kg)
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">Supply / Issue No *</label>
-                        <input
-                          type="text"
-                          required
-                          value={delForm.supplyNo}
-                          onChange={(e) => setDelForm((p) => ({ ...p, supplyNo: e.target.value }))}
-                          placeholder="e.g. SUP-261117-001"
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">Delivery Date *</label>
-                        <input
-                          type="date"
-                          required
-                          value={delForm.deliveryDate}
-                          onChange={(e) => setDelForm((p) => ({ ...p, deliveryDate: e.target.value }))}
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">
-                          Delivery Weight (kg) *{' '}
-                          <span className="font-normal text-slate-500">
-                            (Max {fmtKg(selectedDeliveryBatch.availableKg)})
-                          </span>
-                        </label>
-                        <input
-                          type="number"
-                          step="0.01"
-                          min="0.01"
-                          max={selectedDeliveryBatch.availableKg}
-                          required
-                          value={delForm.weightKg}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setDelForm((p) => ({ ...p, weightKg: val }));
-                            const num = parseFloat(val);
-                            if (
-                              Number.isFinite(num) &&
-                              Math.abs(num - selectedDeliveryBatch.availableKg) <= 0.01
-                            ) {
-                              setDeliveryMode('Full');
-                            } else {
-                              setDeliveryMode('Partial');
-                            }
-                          }}
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                        />
-                        {delForm.weightKg && Number.isFinite(parseFloat(delForm.weightKg)) && (
-                          <p className="text-[11px] text-slate-500 font-mono mt-1">
-                            Remaining after issue:{' '}
-                            <strong className="text-slate-800">
-                              {fmtKg(Math.max(0, selectedDeliveryBatch.availableKg - parseFloat(delForm.weightKg)))} kg
-                            </strong>
-                          </p>
-                        )}
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">Rolls Issued</label>
-                        <input
-                          type="number"
-                          min="0"
-                          value={delForm.rollCount}
-                          onChange={(e) => setDelForm((p) => ({ ...p, rollCount: e.target.value }))}
-                          placeholder="e.g. 8"
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">
-                          Issued To (Section / Line) *
-                        </label>
-                        <input
-                          type="text"
-                          required
-                          list="issue-destination-options"
-                          value={delForm.issuedTo}
-                          onChange={(e) => setDelForm((p) => ({ ...p, issuedTo: e.target.value }))}
-                          placeholder="Cutting Floor / Line 05..."
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                        />
-                        <datalist id="issue-destination-options">
-                          <option value="Cutting Floor" />
-                          <option value="Sample Section" />
-                          <option value="Finishing / Rib Cutting" />
-                          {lineNames.map((l) => (
-                            <option key={l} value={l} />
-                          ))}
-                        </datalist>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">Receiver Name</label>
-                        <input
-                          type="text"
-                          value={delForm.receiverName}
-                          onChange={(e) => setDelForm((p) => ({ ...p, receiverName: e.target.value }))}
-                          placeholder="Cutting supervisor / floor bearer"
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                        />
-                      </div>
-
-                      <div className="sm:col-span-2">
-                        <label className="block text-xs font-bold text-slate-700 mb-1">Delivery Remark</label>
-                        <input
-                          type="text"
-                          value={delForm.remark}
-                          onChange={(e) => setDelForm((p) => ({ ...p, remark: e.target.value }))}
-                          placeholder="Requisition ref, body/rib split note, etc."
-                          className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="pt-2 flex items-center justify-end gap-2">
-                      <button
-                        type="button"
-                        onClick={() => setSelectedBatchIdForDelivery(null)}
-                        className="px-4 py-2 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 cursor-pointer"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        type="submit"
-                        disabled={isSubmittingDel}
-                        className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl transition cursor-pointer disabled:opacity-50 flex items-center gap-2"
-                      >
-                        <Truck size={15} />
-                        <span>
-                          {isSubmittingDel ? 'Issuing Supply...' : `Confirm ${deliveryMode} Delivery`}
-                        </span>
-                      </button>
-                    </div>
-                  </>
-                )}
-              </form>
-            </div>
-          ) : (
-            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900">
-              Your role ({rolePerms?.label}) has view-only access to the Delivery Register.
-            </div>
-          )}
-
-          {/* Delivery Register Table */}
-          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-            <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
-                <h3 className="text-sm font-extrabold text-slate-900">Fabric Delivery / Supply Register</h3>
-                <p className="text-xs text-slate-500">{filteredDeliveriesHistory.length} supply transaction(s)</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
-                  <input
-                    type="text"
-                    value={delHistorySearch}
-                    onChange={(e) => setDelHistorySearch(e.target.value)}
-                    placeholder="Search Supply No, PO, Buyer..."
-                    className="pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                <button
-                  onClick={() =>
-                    exportCsvFile(
-                      `fabric_delivery_register_${todayISO()}.csv`,
-                      ['Supply No', 'Date', 'Type', 'Buyer', 'PO', 'Style', 'Rack', 'Fabric', 'Color', 'Lot', 'Weight (kg)', 'Issued To', 'Receiver', 'Issued By', 'Remark'],
-                      filteredDeliveriesHistory.map((d) => [
-                        d.supplyNo,
-                        d.deliveryDate,
-                        d.deliveryType,
-                        d.buyer,
-                        d.po,
-                        d.style || '',
-                        d.rackCode || '',
-                        d.fabricType || '',
-                        d.color || '',
-                        d.lotNo || '',
-                        d.weightKg.toFixed(2),
-                        d.issuedTo,
-                        d.receiverName || '',
-                        d.createdBy,
-                        d.remark || '',
-                      ])
-                    )
-                  }
-                  className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700 flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Download size={13} />
-                  <span>CSV</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead className="bg-slate-100 text-slate-700 uppercase font-bold">
-                  <tr>
-                    <th className="p-3 border-b border-slate-200">Supply No / Date</th>
-                    <th className="p-3 border-b border-slate-200">Type</th>
-                    <th className="p-3 border-b border-slate-200">Buyer / PO / Style</th>
-                    <th className="p-3 border-b border-slate-200">Fabric / Color / Lot</th>
-                    <th className="p-3 border-b border-slate-200">Issued To</th>
-                    <th className="p-3 border-b border-slate-200 text-right">Delivered</th>
-                    <th className="p-3 border-b border-slate-200 text-center">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {filteredDeliveriesHistory.length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="p-8 text-center text-slate-500">
-                        No fabric delivery records yet.
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredDeliveriesHistory.map((d) => (
-                      <tr key={d.id} className="hover:bg-slate-50">
-                        <td className="p-3 font-mono whitespace-nowrap">
-                          <div className="font-extrabold text-slate-900">{d.supplyNo}</div>
-                          <div className="text-slate-500">{d.deliveryDate}</div>
-                        </td>
-                        <td className="p-3 whitespace-nowrap">
-                          <span
-                            className={`font-bold ${
-                              d.deliveryType === 'Full' ? 'text-emerald-700' : 'text-amber-700'
-                            }`}
-                          >
-                            {d.deliveryType}
-                          </span>
-                        </td>
-                        <td className="p-3">
-                          <div className="font-extrabold text-slate-900 font-mono">PO {d.po}</div>
-                          <div className="text-slate-600">{d.buyer} · {d.style || '-'}</div>
-                        </td>
-                        <td className="p-3">
-                          <div className="font-bold text-slate-800">{d.fabricType || '-'} · {d.color || '-'}</div>
-                          <div className="text-slate-500 font-mono">Rack {d.rackCode || '-'} · Lot {d.lotNo || '-'}</div>
-                        </td>
-                        <td className="p-3">
-                          <div className="font-bold text-slate-800">{d.issuedTo}</div>
-                          {d.receiverName && <div className="text-slate-500">Recv: {d.receiverName}</div>}
-                        </td>
-                        <td className="p-3 text-right font-mono tabular-nums font-extrabold text-blue-800 whitespace-nowrap">
-                          {fmtKg(d.weightKg)} kg
-                        </td>
-                        <td className="p-3 text-center whitespace-nowrap">
-                          <div className="flex items-center justify-center gap-1.5">
-                            <button
-                              onClick={() => setPrintSlipDelivery(d)}
-                              className="px-2 py-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-bold flex items-center gap-1 cursor-pointer"
-                              title="Print Supply Challan Slip"
-                            >
-                              <Printer size={12} />
-                              <span>Slip</span>
-                            </button>
-                            {rolePerms?.canDeleteRecords && (
-                              <button
-                                onClick={() => handleDeleteDeliveryRecord(d)}
-                                className="p-1 rounded-lg text-rose-500 hover:bg-rose-50 cursor-pointer"
-                                title="Delete delivery & restore stock"
-                              >
-                                <Trash2 size={14} />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+        <MultiPoDeliverySection
+          enrichedReceivings={enrichedReceivings}
+          deliveries={deliveries}
+          lineNames={lineNames}
+          canDeliver={Boolean(rolePerms?.canDeliver)}
+          canDeleteRecords={Boolean(rolePerms?.canDeleteRecords)}
+          canExportData={Boolean(rolePerms?.canExport)}
+          roleLabel={rolePerms?.label || 'Viewer'}
+          deliveryQueue={deliveryQueue}
+          setDeliveryQueue={setDeliveryQueue}
+          delPoSearch={delPoSearch}
+          setDelPoSearch={setDelPoSearch}
+          onSubmitDeliveryBatch={handleSubmitDeliveryBatch}
+          onDeleteDeliveryRecord={handleDeleteDeliveryRecord}
+          onShowToast={showToast}
+        />
       )}
 
       {/* ======================================================================== */}
       {/* SUB-TAB 5: PO-WISE FABRIC BALANCE LEDGER                                 */}
       {/* ======================================================================== */}
       {activeSubTab === 'ledger' && (
-        <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-          <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="bg-white rounded-2xl border border-slate-300 shadow-xs overflow-hidden">
+          <div className="p-4 md:p-5 border-b border-slate-300 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div>
-              <h3 className="text-sm font-extrabold text-slate-900">PO-Wise Fabric Balance Ledger</h3>
-              <p className="text-xs text-slate-500">
+              <h3 className="text-base font-extrabold text-slate-900">PO-Wise Fabric Balance Ledger</h3>
+              <p className="text-xs text-slate-600 mt-0.5">
                 Aggregated required, received, delivered, and store balance per PO
               </p>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2.5">
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
                 <input
@@ -4018,50 +3281,52 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
                   value={ledgerSearch}
                   onChange={(e) => setLedgerSearch(e.target.value)}
                   placeholder="Search PO, Buyer, Style..."
-                  className="pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
+                  className="pl-8 pr-3 py-1.5 bg-white border border-slate-300 rounded-xl text-[13px] outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>
-              <button
-                onClick={() =>
-                  exportCsvFile(
-                    `po_fabric_balance_${todayISO()}.csv`,
-                    ['Buyer', 'PO', 'Style', 'Item', 'File No', 'Ship Date', 'Required (kg)', 'Received (kg)', 'Delivered (kg)', 'Balance (kg)', 'Racks'],
-                    filteredPoLedger.map((p) => [
-                      p.buyer,
-                      p.po,
-                      p.style,
-                      p.itemName,
-                      p.fileNo,
-                      p.shipDate,
-                      p.requiredKg.toFixed(2),
-                      p.receivedKg.toFixed(2),
-                      p.deliveredKg.toFixed(2),
-                      p.availableKg.toFixed(2),
-                      Array.from(p.racks).join(' | '),
-                    ])
-                  )
-                }
-                className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-xs font-bold text-slate-700 flex items-center gap-1.5 cursor-pointer"
-              >
-                <Download size={13} />
-                <span>CSV</span>
-              </button>
+              {rolePerms?.canExport && (
+                <button
+                  onClick={() =>
+                    exportCsvFile(
+                      `po_fabric_balance_${todayISO()}.csv`,
+                      ['Buyer', 'PO', 'Style', 'Item', 'File No', 'Ship Date', 'Required (kg)', 'Received (kg)', 'Delivered (kg)', 'Balance (kg)', 'Racks'],
+                      filteredPoLedger.map((p) => [
+                        p.buyer,
+                        p.po,
+                        p.style,
+                        p.itemName,
+                        p.fileNo,
+                        p.shipDate,
+                        p.requiredKg.toFixed(2),
+                        p.receivedKg.toFixed(2),
+                        p.deliveredKg.toFixed(2),
+                        p.availableKg.toFixed(2),
+                        Array.from(p.racks).join(' | '),
+                      ])
+                    )
+                  }
+                  className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-xs font-bold text-slate-800 flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Download size={13} />
+                  <span>CSV</span>
+                </button>
+              )}
             </div>
           </div>
 
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-xs">
-              <thead className="bg-slate-100 text-slate-700 uppercase font-bold">
+            <table className="w-full text-left border-collapse text-[13px]">
+              <thead className="bg-slate-100 text-slate-800 uppercase text-xs font-extrabold">
                 <tr>
-                  <th className="p-3 border-b border-slate-200">Buyer / PO</th>
-                  <th className="p-3 border-b border-slate-200">Style / Item / File</th>
-                  <th className="p-3 border-b border-slate-200">Ship Date</th>
-                  <th className="p-3 border-b border-slate-200">Racks</th>
-                  <th className="p-3 border-b border-slate-200 text-right">Required</th>
-                  <th className="p-3 border-b border-slate-200 text-right">Received</th>
-                  <th className="p-3 border-b border-slate-200 text-right">Delivered</th>
-                  <th className="p-3 border-b border-slate-200 text-right">Store Balance</th>
-                  <th className="p-3 border-b border-slate-200 text-center">Action</th>
+                  <th className="p-3.5 border-b border-r border-slate-300">Buyer / PO</th>
+                  <th className="p-3.5 border-b border-r border-slate-300">Style / Item / File</th>
+                  <th className="p-3.5 border-b border-r border-slate-300">Ship Date</th>
+                  <th className="p-3.5 border-b border-r border-slate-300">Racks</th>
+                  <th className="p-3.5 border-b border-r border-slate-300 text-right">Required</th>
+                  <th className="p-3.5 border-b border-r border-slate-300 text-right">Received</th>
+                  <th className="p-3.5 border-b border-r border-slate-300 text-right">Delivered</th>
+                  <th className="p-3.5 border-b border-r border-slate-300 text-right">Store Balance</th>
+                  <th className="p-3.5 border-b border-slate-300 text-center">Action</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
@@ -4074,28 +3339,28 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
                 ) : (
                   filteredPoLedger.map((p) => (
                     <tr key={p.key} className="hover:bg-slate-50">
-                      <td className="p-3 whitespace-nowrap">
+                      <td className="p-3 border-r border-slate-200 whitespace-nowrap">
                         <div className="font-mono font-extrabold text-slate-900">PO {p.po}</div>
-                        <div className="font-bold text-blue-800">{p.buyer}</div>
+                        <div className="text-xs font-bold text-blue-800">{p.buyer}</div>
                       </td>
-                      <td className="p-3">
-                        <div className="font-bold text-slate-800">{p.style}</div>
-                        <div className="text-slate-500">{p.itemName} {p.fileNo !== '-' ? `· File ${p.fileNo}` : ''}</div>
+                      <td className="p-3 border-r border-slate-200">
+                        <div className="font-bold text-slate-900">{p.style}</div>
+                        <div className="text-xs text-slate-600">{p.itemName} {p.fileNo !== '-' ? `· File ${p.fileNo}` : ''}</div>
                       </td>
-                      <td className="p-3 font-mono whitespace-nowrap">{p.shipDate}</td>
-                      <td className="p-3 font-mono text-slate-700">
+                      <td className="p-3 border-r border-slate-200 font-mono whitespace-nowrap">{p.shipDate}</td>
+                      <td className="p-3 border-r border-slate-200 font-mono font-bold text-slate-800">
                         {p.racks.size > 0 ? Array.from(p.racks).join(', ') : '-'}
                       </td>
-                      <td className="p-3 text-right font-mono tabular-nums font-semibold text-slate-700 whitespace-nowrap">
+                      <td className="p-3 border-r border-slate-200 text-right font-mono tabular-nums font-bold text-slate-700 whitespace-nowrap">
                         {p.requiredKg > 0 ? `${fmtKg(p.requiredKg)} kg` : '-'}
                       </td>
-                      <td className="p-3 text-right font-mono tabular-nums font-bold text-slate-800 whitespace-nowrap">
+                      <td className="p-3 border-r border-slate-200 text-right font-mono tabular-nums font-bold text-slate-900 whitespace-nowrap">
                         {fmtKg(p.receivedKg)} kg
                       </td>
-                      <td className="p-3 text-right font-mono tabular-nums font-bold text-blue-700 whitespace-nowrap">
+                      <td className="p-3 border-r border-slate-200 text-right font-mono tabular-nums font-bold text-blue-700 whitespace-nowrap">
                         {fmtKg(p.deliveredKg)} kg
                       </td>
-                      <td className="p-3 text-right font-mono tabular-nums font-extrabold text-emerald-700 whitespace-nowrap">
+                      <td className="p-3 border-r border-slate-200 text-right font-mono tabular-nums font-extrabold text-emerald-700 whitespace-nowrap">
                         {fmtKg(p.availableKg)} kg
                       </td>
                       <td className="p-3 text-center whitespace-nowrap">
@@ -4105,7 +3370,7 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
                               setDelPoSearch(p.po);
                               setActiveSubTab('delivery');
                             }}
-                            className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold cursor-pointer"
+                            className="px-3 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer"
                           >
                             Deliver
                           </button>
@@ -4121,49 +3386,56 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
       )}
 
       {/* ======================================================================== */}
-      {/* SUB-TAB 6: MASTER ADMIN USER & ROLE CONTROL + AUDIT LOG                  */}
+      {/* SUB-TAB 6: MASTER ADMIN ROLE PERMISSIONS, USERS & AUDIT LOG              */}
       {/* ======================================================================== */}
       {activeSubTab === 'users' && rolePerms?.canManageUsers && (
         <div className="space-y-6">
+          {/* Dynamic Admin Role Permission Giving Matrix */}
+          <RolePermissionsMatrixCard
+            roleConfigs={roleConfigs}
+            onSaveRolePermissions={handleSaveRolePermissions}
+            onResetRoleDefaults={handleResetRoleDefaults}
+          />
+
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
             <form
               onSubmit={handleCreateUser}
-              className="lg:col-span-4 bg-white rounded-2xl border border-slate-200 p-5 space-y-3.5"
+              className="lg:col-span-4 bg-white rounded-2xl border border-slate-300 shadow-xs p-5 space-y-3.5"
             >
-              <div className="pb-2.5 border-b border-slate-200">
-                <h3 className="text-sm font-extrabold text-slate-900 flex items-center gap-2">
-                  <UserPlus size={16} />
+              <div className="pb-3 border-b border-slate-300">
+                <h3 className="text-base font-extrabold text-slate-900 flex items-center gap-2">
+                  <UserPlus size={17} />
                   <span>Create Store User</span>
                 </h3>
-                <p className="text-xs text-slate-500">Add staff accounts and assign exact access roles</p>
+                <p className="text-xs text-slate-600 mt-0.5">Add staff accounts and assign access roles</p>
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Username *</label>
+                <label className="block text-xs font-extrabold text-slate-800 mb-1">Username *</label>
                 <input
                   type="text"
                   required
                   value={newUserForm.username}
                   onChange={(e) => setNewUserForm((p) => ({ ...p, username: e.target.value }))}
                   placeholder="e.g. rahim_store"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] font-mono outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Full Name *</label>
+                <label className="block text-xs font-extrabold text-slate-800 mb-1">Full Name *</label>
                 <input
                   type="text"
                   required
                   value={newUserForm.fullName}
                   onChange={(e) => setNewUserForm((p) => ({ ...p, fullName: e.target.value }))}
                   placeholder="e.g. Md Rahim Uddin"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Password *</label>
+                <label className="block text-xs font-extrabold text-slate-800 mb-1">Password *</label>
                 <input
                   type="password"
                   required
@@ -4171,121 +3443,143 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
                   value={newUserForm.password}
                   onChange={(e) => setNewUserForm((p) => ({ ...p, password: e.target.value }))}
                   placeholder="Min 4 characters"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
                 />
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Role *</label>
+                <label className="block text-xs font-extrabold text-slate-800 mb-1">Role *</label>
                 <select
                   value={newUserForm.role}
                   onChange={(e) => setNewUserForm((p) => ({ ...p, role: e.target.value as FabricRole }))}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-bold text-slate-800 outline-none"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] font-bold text-slate-900 outline-none"
                 >
-                  {(Object.keys(ROLE_META) as FabricRole[]).map((roleKey) => (
+                  {ALL_FABRIC_ROLES.map((roleKey) => (
                     <option key={roleKey} value={roleKey}>
-                      {ROLE_META[roleKey].label}
+                      {roleConfigs[roleKey]?.label || roleKey}
                     </option>
                   ))}
                 </select>
-                <p className="text-[11px] text-slate-500 mt-1">{ROLE_META[newUserForm.role].summary}</p>
+                <p className="text-xs text-slate-600 mt-1">
+                  {roleConfigs[newUserForm.role]?.description}
+                </p>
               </div>
 
               <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">Department</label>
+                <label className="block text-xs font-extrabold text-slate-800 mb-1">Department</label>
                 <input
                   type="text"
                   value={newUserForm.department}
                   onChange={(e) => setNewUserForm((p) => ({ ...p, department: e.target.value }))}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none"
+                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] outline-none"
                 />
               </div>
 
               <button
                 type="submit"
                 disabled={isCreatingUser}
-                className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl transition cursor-pointer disabled:opacity-50"
+                className="w-full py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-[13px] font-bold rounded-xl transition cursor-pointer disabled:opacity-50"
               >
                 {isCreatingUser ? 'Creating User...' : 'Create User Account'}
               </button>
             </form>
 
-            <div className="lg:col-span-8 bg-white rounded-2xl border border-slate-200 overflow-hidden">
-              <div className="p-4 border-b border-slate-200">
-                <h3 className="text-sm font-extrabold text-slate-900">User & Role Directory</h3>
-                <p className="text-xs text-slate-500">
-                  Change user roles, reset passwords, suspend or delete accounts in real time
+            <div className="lg:col-span-8 bg-white rounded-2xl border border-slate-300 shadow-xs overflow-hidden">
+              <div className="p-4 md:p-5 border-b border-slate-300 bg-slate-50">
+                <h3 className="text-base font-extrabold text-slate-900">User & Role Directory</h3>
+                <p className="text-xs text-slate-600 mt-0.5">
+                  Change user roles, grant custom permissions per user, reset passwords, or suspend accounts
                 </p>
               </div>
 
               <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead className="bg-slate-100 text-slate-700 uppercase font-bold">
+                <table className="w-full text-left border-collapse text-[13px]">
+                  <thead className="bg-slate-100 text-slate-800 uppercase text-xs font-extrabold">
                     <tr>
-                      <th className="p-3 border-b border-slate-200">User</th>
-                      <th className="p-3 border-b border-slate-200">Role</th>
-                      <th className="p-3 border-b border-slate-200">Status</th>
-                      <th className="p-3 border-b border-slate-200 text-right">Manage</th>
+                      <th className="p-3 border-b border-r border-slate-300">User</th>
+                      <th className="p-3 border-b border-r border-slate-300">Role</th>
+                      <th className="p-3 border-b border-r border-slate-300">Status</th>
+                      <th className="p-3 border-b border-slate-300 text-right">Manage</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-200">
-                    {users.map((u) => (
-                      <tr key={u.id} className="hover:bg-slate-50">
-                        <td className="p-3">
-                          <div className="font-bold text-slate-900">{u.fullName}</div>
-                          <div className="font-mono text-slate-500">
-                            @{u.username} · {u.department || 'Fabric Store'}
-                          </div>
-                        </td>
-                        <td className="p-3">
-                          <select
-                            value={u.role}
-                            onChange={(e) => handleChangeUserRole(u, e.target.value as FabricRole)}
-                            className="px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-800 outline-none cursor-pointer"
-                          >
-                            {(Object.keys(ROLE_META) as FabricRole[]).map((rk) => (
-                              <option key={rk} value={rk}>
-                                {ROLE_META[rk].label}
-                              </option>
-                            ))}
-                          </select>
-                        </td>
-                        <td className="p-3">
-                          <button
-                            onClick={() => handleToggleUserActive(u)}
-                            className={`text-xs font-bold px-2.5 py-1 rounded-lg border cursor-pointer ${
-                              u.isActive
-                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
-                                : 'bg-rose-50 text-rose-700 border-rose-200'
-                            }`}
-                          >
-                            {u.isActive ? 'Active' : 'Disabled'}
-                          </button>
-                        </td>
-                        <td className="p-3 text-right whitespace-nowrap">
-                          <div className="flex items-center justify-end gap-1.5">
-                            <button
-                              onClick={() => {
-                                setResetPwdUser(u);
-                                setResetPwdValue('');
-                              }}
-                              className="px-2.5 py-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-bold cursor-pointer"
+                    {users.map((u) => {
+                      const customCount = u.customPermissions
+                        ? Object.keys(u.customPermissions).length
+                        : 0;
+                      return (
+                        <tr key={u.id} className="hover:bg-slate-50">
+                          <td className="p-3 border-r border-slate-200">
+                            <div className="font-extrabold text-slate-900">{u.fullName}</div>
+                            <div className="text-xs font-mono text-slate-600">
+                              @{u.username} · {u.department || 'Fabric Store'}
+                            </div>
+                          </td>
+                          <td className="p-3 border-r border-slate-200">
+                            <select
+                              value={u.role}
+                              onChange={(e) => handleChangeUserRole(u, e.target.value as FabricRole)}
+                              className="px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-bold text-slate-900 outline-none cursor-pointer"
                             >
-                              Reset Pwd
+                              {ALL_FABRIC_ROLES.map((rk) => (
+                                <option key={rk} value={rk}>
+                                  {roleConfigs[rk]?.label || rk}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+                          <td className="p-3 border-r border-slate-200">
+                            <button
+                              onClick={() => handleToggleUserActive(u)}
+                              className={`text-xs font-extrabold px-2.5 py-1 rounded-lg border cursor-pointer ${
+                                u.isActive
+                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                                  : 'bg-rose-50 text-rose-700 border-rose-300'
+                              }`}
+                            >
+                              {u.isActive ? 'Active' : 'Disabled'}
                             </button>
-                            {u.id !== currentUser.id && (
+                          </td>
+                          <td className="p-3 text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end gap-1.5">
                               <button
-                                onClick={() => handleDeleteUser(u)}
-                                className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 cursor-pointer"
-                                title="Delete user"
+                                type="button"
+                                onClick={() => setPermModalUser(u)}
+                                className={`px-2.5 py-1 rounded-lg border text-xs font-bold flex items-center gap-1 cursor-pointer ${
+                                  customCount > 0
+                                    ? 'border-blue-400 bg-blue-50 text-blue-800 hover:bg-blue-100'
+                                    : 'border-slate-300 bg-white hover:bg-slate-100 text-slate-800'
+                                }`}
+                                title="Grant or restrict specific permissions for this user"
                               >
-                                <Trash2 size={14} />
+                                <Sliders size={12} />
+                                <span>
+                                  Permissions{customCount > 0 ? ` (${customCount})` : ''}
+                                </span>
                               </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                              <button
+                                onClick={() => {
+                                  setResetPwdUser(u);
+                                  setResetPwdValue('');
+                                }}
+                                className="px-2.5 py-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold cursor-pointer"
+                              >
+                                Reset Pwd
+                              </button>
+                              {u.id !== currentUser.id && (
+                                <button
+                                  onClick={() => handleDeleteUser(u)}
+                                  className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 cursor-pointer"
+                                  title="Delete user"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -4293,166 +3587,174 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
           </div>
 
           {/* Activity Audit Log */}
-          <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-            <div className="p-4 border-b border-slate-200 flex items-center gap-2">
-              <History size={16} className="text-slate-600" />
-              <h3 className="text-sm font-extrabold text-slate-900">Store Activity Audit Trail</h3>
-            </div>
-            <div className="max-h-72 overflow-y-auto divide-y divide-slate-200 text-xs">
-              {auditLogs.length === 0 ? (
-                <div className="p-6 text-center text-slate-500">No audit entries logged yet.</div>
-              ) : (
-                auditLogs.map((log) => (
-                  <div key={log.id} className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                    <div>
-                      <span className="font-bold text-slate-900">{log.action}</span>
-                      <span className="text-slate-400 mx-1.5">·</span>
-                      <span className="text-slate-700">{log.details}</span>
+          {rolePerms?.canViewAudit && (
+            <div className="bg-white rounded-2xl border border-slate-300 shadow-xs overflow-hidden">
+              <div className="p-4 border-b border-slate-300 bg-slate-50 flex items-center gap-2">
+                <History size={16} className="text-slate-700" />
+                <h3 className="text-base font-extrabold text-slate-900">Store Activity Audit Trail</h3>
+              </div>
+              <div className="max-h-72 overflow-y-auto divide-y divide-slate-200 text-[13px]">
+                {auditLogs.length === 0 ? (
+                  <div className="p-6 text-center text-slate-500">No audit entries logged yet.</div>
+                ) : (
+                  auditLogs.map((log) => (
+                    <div key={log.id} className="p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div>
+                        <span className="font-extrabold text-slate-900">{log.action}</span>
+                        <span className="text-slate-400 mx-1.5">·</span>
+                        <span className="text-slate-700">{log.details}</span>
+                      </div>
+                      <div className="text-xs font-mono text-slate-500 shrink-0">
+                        @{log.actorUsername} · {new Date(log.createdAt).toLocaleString()}
+                      </div>
                     </div>
-                    <div className="font-mono text-slate-500 shrink-0">
-                      @{log.actorUsername} · {new Date(log.createdAt).toLocaleString()}
-                    </div>
-                  </div>
-                ))
-              )}
+                  ))
+                )}
+              </div>
             </div>
-          </div>
+          )}
         </div>
       )}
 
       {/* ======================================================================== */}
       {/* MODAL: RACK STOCK DETAILS & SHARED RACK SPLIT / TRANSFER                 */}
       {/* ======================================================================== */}
-      {selectedRackSummary && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-5xl w-full max-h-[90vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
-            <div className="p-5 bg-slate-900 text-white flex items-center justify-between gap-3">
-              <div>
-                <h3 className="text-base font-extrabold font-mono">
-                  Rack {selectedRackSummary.rack.code} — Stock Details
-                </h3>
-                <p className="text-xs text-slate-300 mt-0.5 font-mono">
-                  {selectedRackSummary.rack.zone} · Stock: {fmtKg(selectedRackSummary.currentKg)} kg · Free:{' '}
-                  {fmtKg(selectedRackSummary.freeCapacityKg)} kg / {fmtKg(selectedRackSummary.rack.capacityKg)} kg
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                {rolePerms?.canManageRacks && (
+      {selectedRackSummary && (() => {
+        const rackPalette = getZoneColorPalette(selectedRackSummary.rack.zone);
+        const modalLots = rackDetailShowExhausted
+          ? selectedRackSummary.rackBatches
+          : selectedRackSummary.activeBatches;
+
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4">
+            <div className="bg-white rounded-t-3xl sm:rounded-2xl max-w-5xl w-full max-h-[92vh] flex flex-col shadow-2xl border border-slate-200 overflow-hidden">
+              <div className={`p-4 sm:p-5 ${rackPalette.headerBg} ${rackPalette.headerText} flex flex-col sm:flex-row sm:items-center justify-between gap-3`}>
+                <div>
+                  <h3 className="text-base sm:text-lg font-extrabold font-mono">
+                    Rack {selectedRackSummary.rack.code} — Stock & Management
+                  </h3>
+                  <p className={`text-xs mt-0.5 font-mono ${rackPalette.headerSubtext}`}>
+                    {selectedRackSummary.rack.zone} · Stock: {fmtKg(selectedRackSummary.currentKg)} kg · Free:{' '}
+                    {fmtKg(selectedRackSummary.freeCapacityKg)} kg / {fmtKg(selectedRackSummary.rack.capacityKg)} kg
+                  </p>
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
                   <button
-                    onClick={() => {
-                      setRackForm({
-                        id: selectedRackSummary.rack.id,
-                        code: selectedRackSummary.rack.code,
-                        zone: selectedRackSummary.rack.zone,
-                        capacityKg: String(selectedRackSummary.rack.capacityKg),
-                        description: selectedRackSummary.rack.description || '',
-                      });
-                      setShowRackFormModal(true);
-                    }}
-                    className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200 flex items-center gap-1 cursor-pointer"
+                    type="button"
+                    onClick={() => setQrModalRack(selectedRackSummary)}
+                    className="min-h-[40px] px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-xs font-bold text-white flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
                   >
-                    <Edit3 size={13} />
-                    <span>Edit Rack</span>
+                    <QrCode size={14} />
+                    <span>Fixed QR</span>
                   </button>
-                )}
-                <button
-                  onClick={() => setSelectedRackId(null)}
-                  className="h-8 w-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white flex items-center justify-center cursor-pointer"
-                >
-                  <X size={16} />
-                </button>
+                  {rolePerms?.canManageRacks && (
+                    <button
+                      onClick={() => {
+                        setRackForm({
+                          id: selectedRackSummary.rack.id,
+                          code: selectedRackSummary.rack.code,
+                          zone: selectedRackSummary.rack.zone,
+                          capacityKg: String(selectedRackSummary.rack.capacityKg),
+                          description: selectedRackSummary.rack.description || '',
+                        });
+                        setShowRackFormModal(true);
+                      }}
+                      className="min-h-[40px] px-3 py-1.5 rounded-xl bg-white/15 hover:bg-white/25 text-xs font-bold text-white flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      <Edit3 size={13} />
+                      <span>Edit Rack</span>
+                    </button>
+                  )}
+                  <button
+                    onClick={() => setSelectedRackId(null)}
+                    className="min-h-[40px] min-w-[40px] rounded-xl bg-white/15 hover:bg-white/25 text-white flex items-center justify-center cursor-pointer"
+                    aria-label="Close rack modal"
+                  >
+                    <X size={16} />
+                  </button>
+                </div>
               </div>
-            </div>
 
-            <div className="p-4 border-b border-slate-200 bg-slate-50 flex flex-wrap items-center justify-between gap-3 text-xs">
-              <div className="flex items-center gap-4 font-mono">
-                <span>
-                  Received: <strong>{fmtKg(selectedRackSummary.receivedKg)} kg</strong>
-                </span>
-                <span>
-                  Delivered: <strong>{fmtKg(selectedRackSummary.deliveredKg)} kg</strong>
-                </span>
-                <span className="text-emerald-700">
-                  Balance: <strong>{fmtKg(selectedRackSummary.currentKg)} kg</strong>
-                </span>
+              <div className={`p-3.5 sm:p-4 border-b ${rackPalette.surfaceBorder} ${rackPalette.surfaceBg} flex flex-wrap items-center justify-between gap-3 text-xs`}>
+                <div className="flex items-center gap-4 font-mono flex-wrap">
+                  <span>
+                    Received: <strong>{fmtKg(selectedRackSummary.receivedKg)} kg</strong>
+                  </span>
+                  <span>
+                    Delivered: <strong>{fmtKg(selectedRackSummary.deliveredKg)} kg</strong>
+                  </span>
+                  <span className="text-emerald-800">
+                    Balance: <strong>{fmtKg(selectedRackSummary.currentKg)} kg</strong>
+                  </span>
+                </div>
+
+                <label className="min-h-[36px] flex items-center gap-2 font-semibold text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={rackDetailShowExhausted}
+                    onChange={(e) => setRackDetailShowExhausted(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300"
+                  />
+                  <span>Include fully delivered (0 kg) history</span>
+                </label>
               </div>
 
-              <label className="flex items-center gap-1.5 font-semibold text-slate-600 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={rackDetailShowExhausted}
-                  onChange={(e) => setRackDetailShowExhausted(e.target.checked)}
-                  className="rounded border-slate-300"
-                />
-                <span>Include fully delivered (0 kg) history</span>
-              </label>
-            </div>
+              <div className="overflow-auto flex-1">
+                {modalLots.length === 0 ? (
+                  <div className="p-8 text-center text-slate-500 text-xs">
+                    No fabric lots in Rack {selectedRackSummary.rack.code}.
+                  </div>
+                ) : (
+                  <>
+                    {/* Mobile Cards inside Rack Detail Modal */}
+                    <div className="md:hidden p-3 space-y-3 bg-slate-50">
+                      {modalLots.map((b) => (
+                        <div
+                          key={b.id}
+                          className="bg-white rounded-2xl border border-slate-200 p-3.5 space-y-2.5 text-xs"
+                        >
+                          <div className="flex items-start justify-between gap-2">
+                            <div>
+                              <div className="font-extrabold text-slate-900 font-mono text-sm">
+                                PO {b.po}
+                              </div>
+                              <div className="text-slate-600 font-semibold">
+                                {b.buyer} · {b.style || '-'}
+                              </div>
+                            </div>
+                            <span className="font-mono font-extrabold text-emerald-700 text-sm">
+                              {fmtKg(b.availableKg)} kg
+                            </span>
+                          </div>
 
-            <div className="overflow-auto flex-1">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead className="bg-slate-100 text-slate-700 uppercase font-bold sticky top-0">
-                  <tr>
-                    <th className="p-3 border-b border-slate-200">Buyer / PO / Style</th>
-                    <th className="p-3 border-b border-slate-200">Fabric / Color / GSM</th>
-                    <th className="p-3 border-b border-slate-200">Lot / Challan / Date</th>
-                    <th className="p-3 border-b border-slate-200 text-right">Received</th>
-                    <th className="p-3 border-b border-slate-200 text-right">Delivered</th>
-                    <th className="p-3 border-b border-slate-200 text-right">Balance</th>
-                    <th className="p-3 border-b border-slate-200 text-center">Actions (Deliver / Share Rack)</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {(rackDetailShowExhausted
-                    ? selectedRackSummary.rackBatches
-                    : selectedRackSummary.activeBatches
-                  ).length === 0 ? (
-                    <tr>
-                      <td colSpan={7} className="p-8 text-center text-slate-500">
-                        No fabric lots in Rack {selectedRackSummary.rack.code}.
-                      </td>
-                    </tr>
-                  ) : (
-                    (rackDetailShowExhausted
-                      ? selectedRackSummary.rackBatches
-                      : selectedRackSummary.activeBatches
-                    ).map((b) => (
-                      <tr key={b.id} className="hover:bg-slate-50">
-                        <td className="p-3">
-                          <div className="font-extrabold text-slate-900 font-mono">PO {b.po}</div>
-                          <div className="text-slate-600">{b.buyer} · {b.style || '-'}</div>
-                          <div className="text-slate-400">Ship: {b.shipDate || '-'}</div>
-                        </td>
-                        <td className="p-3">
-                          <div className="font-bold text-slate-800">{b.fabricType}</div>
-                          <div className="text-slate-600">{b.color} {b.gsm ? `· ${b.gsm}` : ''}</div>
-                        </td>
-                        <td className="p-3 font-mono">
-                          <div className="font-bold text-slate-800">Lot {b.lotNo}</div>
-                          <div className="text-slate-500">Ch {b.challanNo} · {b.receiveDate}</div>
-                        </td>
-                        <td className="p-3 text-right font-mono tabular-nums">{fmtKg(b.weightKg)} kg</td>
-                        <td className="p-3 text-right font-mono tabular-nums text-blue-700">
-                          {fmtKg(b.deliveredKg)} kg
-                        </td>
-                        <td className="p-3 text-right font-mono tabular-nums font-extrabold text-emerald-700">
-                          {fmtKg(b.availableKg)} kg
-                        </td>
-                        <td className="p-3 text-center whitespace-nowrap">
-                          <div className="flex flex-col items-center gap-1.5">
-                            <div className="flex items-center gap-1.5">
-                              {rolePerms?.canDeliver && b.availableKg > 0.009 && (
+                          <div className="text-slate-700">
+                            <span className="font-bold">{b.fabricType}</span> · {b.color}{' '}
+                            {b.gsm ? `· ${b.gsm}` : ''}
+                            <div className="font-mono text-slate-500 mt-0.5">
+                              Lot {b.lotNo} · Ch {b.challanNo} · {b.receiveDate}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center justify-between text-[11px] font-mono text-slate-500 pt-2 border-t border-slate-100">
+                            <span>Recv: {fmtKg(b.weightKg)} kg</span>
+                            <span>Deliv: {fmtKg(b.deliveredKg)} kg</span>
+                          </div>
+
+                          {b.availableKg > 0.009 && (rolePerms?.canDeliver || rolePerms?.canManageRacks) && (
+                            <div className="flex items-center gap-2 pt-1">
+                              {rolePerms?.canDeliver && (
                                 <button
                                   onClick={() => {
                                     setSelectedRackId(null);
                                     selectBatchForDelivery(b, 'Partial');
                                     setActiveSubTab('delivery');
                                   }}
-                                  className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold cursor-pointer"
+                                  className="flex-1 min-h-[44px] px-3 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-bold cursor-pointer"
                                 >
                                   Deliver
                                 </button>
                               )}
-                              {rolePerms?.canManageRacks && b.availableKg > 0.009 && (
+                              {rolePerms?.canManageRacks && (
                                 <button
                                   onClick={() => {
                                     if (transferBatchId === b.id) {
@@ -4464,59 +3766,169 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
                                       setTransferSplitKg(String(b.availableKg));
                                     }
                                   }}
-                                  className="px-2 py-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-bold cursor-pointer flex items-center gap-1"
-                                  title="Split partial kg or move full lot to a shared rack"
+                                  className="flex-1 min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 font-bold cursor-pointer flex items-center justify-center gap-1"
                                 >
-                                  <ArrowRightLeft size={11} />
+                                  <ArrowRightLeft size={13} />
                                   <span>Share / Move</span>
                                 </button>
                               )}
                             </div>
+                          )}
 
-                            {transferBatchId === b.id && (
-                              <div className="flex items-center gap-1.5 p-1.5 bg-slate-100 rounded-lg border border-slate-300 mt-1">
-                                <input
-                                  type="number"
-                                  step="0.01"
-                                  min="0.01"
-                                  max={b.availableKg}
-                                  value={transferSplitKg}
-                                  onChange={(e) => setTransferSplitKg(e.target.value)}
-                                  className="w-20 px-1.5 py-1 bg-white border border-slate-300 rounded font-mono text-[11px]"
-                                  title="Weight (kg) to share/move"
-                                />
-                                <select
-                                  value={transferTargetRackId}
-                                  onChange={(e) => setTransferTargetRackId(e.target.value)}
-                                  className="px-1.5 py-1 bg-white border border-slate-300 rounded text-[11px] font-bold"
-                                >
-                                  {racks
-                                    .filter((rk) => rk.id !== b.rackId && rk.isActive)
-                                    .map((rk) => (
-                                      <option key={rk.id} value={rk.id}>
-                                        Rack {rk.code}
-                                      </option>
-                                    ))}
-                                </select>
-                                <button
-                                  onClick={() => handleSplitOrMoveRack(b)}
-                                  className="px-2 py-1 bg-slate-900 text-white rounded text-[11px] font-bold cursor-pointer"
-                                >
-                                  Apply
-                                </button>
+                          {transferBatchId === b.id && (
+                            <div className="flex flex-wrap items-center gap-2 p-2 bg-slate-100 rounded-xl border border-slate-300">
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0.01"
+                                max={b.availableKg}
+                                value={transferSplitKg}
+                                onChange={(e) => setTransferSplitKg(e.target.value)}
+                                className="min-h-[40px] w-24 px-2 py-1 bg-white border border-slate-300 rounded-lg font-mono text-xs"
+                              />
+                              <select
+                                value={transferTargetRackId}
+                                onChange={(e) => setTransferTargetRackId(e.target.value)}
+                                className="min-h-[40px] flex-1 px-2 py-1 bg-white border border-slate-300 rounded-lg text-xs font-bold"
+                              >
+                                {racks
+                                  .filter((rk) => rk.id !== b.rackId && rk.isActive)
+                                  .map((rk) => (
+                                    <option key={rk.id} value={rk.id}>
+                                      Rack {rk.code}
+                                    </option>
+                                  ))}
+                              </select>
+                              <button
+                                onClick={() => handleSplitOrMoveRack(b)}
+                                className="min-h-[40px] px-3 py-1 bg-slate-900 text-white rounded-lg text-xs font-bold cursor-pointer"
+                              >
+                                Apply
+                              </button>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Desktop Table inside Rack Detail Modal */}
+                    <table className="hidden md:table w-full text-left border-collapse text-xs">
+                      <thead className="bg-slate-100 text-slate-700 uppercase font-bold sticky top-0">
+                        <tr>
+                          <th className="p-3 border-b border-slate-200">Buyer / PO / Style</th>
+                          <th className="p-3 border-b border-slate-200">Fabric / Color / GSM</th>
+                          <th className="p-3 border-b border-slate-200">Lot / Challan / Date</th>
+                          <th className="p-3 border-b border-slate-200 text-right">Received</th>
+                          <th className="p-3 border-b border-slate-200 text-right">Delivered</th>
+                          <th className="p-3 border-b border-slate-200 text-right">Balance</th>
+                          <th className="p-3 border-b border-slate-200 text-center">Actions (Deliver / Share Rack)</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-200">
+                        {modalLots.map((b) => (
+                          <tr key={b.id} className="hover:bg-slate-50">
+                            <td className="p-3">
+                              <div className="font-extrabold text-slate-900 font-mono">PO {b.po}</div>
+                              <div className="text-slate-600">{b.buyer} · {b.style || '-'}</div>
+                              <div className="text-slate-400">Ship: {b.shipDate || '-'}</div>
+                            </td>
+                            <td className="p-3">
+                              <div className="font-bold text-slate-800">{b.fabricType}</div>
+                              <div className="text-slate-600">{b.color} {b.gsm ? `· ${b.gsm}` : ''}</div>
+                            </td>
+                            <td className="p-3 font-mono">
+                              <div className="font-bold text-slate-800">Lot {b.lotNo}</div>
+                              <div className="text-slate-500">Ch {b.challanNo} · {b.receiveDate}</div>
+                            </td>
+                            <td className="p-3 text-right font-mono tabular-nums">{fmtKg(b.weightKg)} kg</td>
+                            <td className="p-3 text-right font-mono tabular-nums text-blue-700">
+                              {fmtKg(b.deliveredKg)} kg
+                            </td>
+                            <td className="p-3 text-right font-mono tabular-nums font-extrabold text-emerald-700">
+                              {fmtKg(b.availableKg)} kg
+                            </td>
+                            <td className="p-3 text-center whitespace-nowrap">
+                              <div className="flex flex-col items-center gap-1.5">
+                                <div className="flex items-center gap-1.5">
+                                  {rolePerms?.canDeliver && b.availableKg > 0.009 && (
+                                    <button
+                                      onClick={() => {
+                                        setSelectedRackId(null);
+                                        selectBatchForDelivery(b, 'Partial');
+                                        setActiveSubTab('delivery');
+                                      }}
+                                      className="px-2.5 py-1 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold cursor-pointer"
+                                    >
+                                      Deliver
+                                    </button>
+                                  )}
+                                  {rolePerms?.canManageRacks && b.availableKg > 0.009 && (
+                                    <button
+                                      onClick={() => {
+                                        if (transferBatchId === b.id) {
+                                          setTransferBatchId(null);
+                                        } else {
+                                          setTransferBatchId(b.id);
+                                          const otherRack = racks.find((rk) => rk.id !== b.rackId && rk.isActive);
+                                          setTransferTargetRackId(otherRack?.id || '');
+                                          setTransferSplitKg(String(b.availableKg));
+                                        }
+                                      }}
+                                      className="px-2 py-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-700 font-bold cursor-pointer flex items-center gap-1"
+                                      title="Split partial kg or move full lot to a shared rack"
+                                    >
+                                      <ArrowRightLeft size={11} />
+                                      <span>Share / Move</span>
+                                    </button>
+                                  )}
+                                </div>
+
+                                {transferBatchId === b.id && (
+                                  <div className="flex items-center gap-1.5 p-1.5 bg-slate-100 rounded-lg border border-slate-300 mt-1">
+                                    <input
+                                      type="number"
+                                      step="0.01"
+                                      min="0.01"
+                                      max={b.availableKg}
+                                      value={transferSplitKg}
+                                      onChange={(e) => setTransferSplitKg(e.target.value)}
+                                      className="w-20 px-1.5 py-1 bg-white border border-slate-300 rounded font-mono text-[11px]"
+                                      title="Weight (kg) to share/move"
+                                    />
+                                    <select
+                                      value={transferTargetRackId}
+                                      onChange={(e) => setTransferTargetRackId(e.target.value)}
+                                      className="px-1.5 py-1 bg-white border border-slate-300 rounded text-[11px] font-bold"
+                                    >
+                                      {racks
+                                        .filter((rk) => rk.id !== b.rackId && rk.isActive)
+                                        .map((rk) => (
+                                          <option key={rk.id} value={rk.id}>
+                                            Rack {rk.code}
+                                          </option>
+                                        ))}
+                                    </select>
+                                    <button
+                                      onClick={() => handleSplitOrMoveRack(b)}
+                                      className="px-2 py-1 bg-slate-900 text-white rounded text-[11px] font-bold cursor-pointer"
+                                    >
+                                      Apply
+                                    </button>
+                                  </div>
+                                )}
                               </div>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* ======================================================================== */}
       {/* MODAL: EDIT REQUIREMENT QTY                                              */}
@@ -4738,114 +4150,40 @@ export default function FabricStoreTab({ allMasterOrders, lineNames }: FabricSto
       )}
 
       {/* ======================================================================== */}
-      {/* MODAL: PRINTABLE FABRIC SUPPLY / ISSUE SLIP                              */}
+      {/* MODAL: USER CUSTOM PERMISSIONS OVERRIDES                                 */}
       {/* ======================================================================== */}
-      {printSlipDelivery && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-xl w-full p-6 border border-slate-200 shadow-2xl space-y-4">
-            <div className="flex items-start justify-between border-b border-slate-200 pb-3">
-              <div>
-                <h3 className="text-base font-extrabold text-slate-900">
-                  Felix Fashions Ltd — Fabric Supply Slip
-                </h3>
-                <p className="text-xs text-slate-500">Store Department · Four H Group</p>
-              </div>
-              <button
-                onClick={() => setPrintSlipDelivery(null)}
-                className="text-slate-400 hover:text-slate-700 cursor-pointer print:hidden"
-              >
-                <X size={18} />
-              </button>
-            </div>
+      {permModalUser && (
+        <UserCustomPermissionModal
+          user={permModalUser}
+          roleConfigs={roleConfigs}
+          onClose={() => setPermModalUser(null)}
+          onSaveUserPermissions={handleSaveUserCustomPermissions}
+        />
+      )}
 
-            <div className="grid grid-cols-2 gap-3 text-xs border border-slate-300 rounded-xl p-4">
-              <div>
-                <span className="text-slate-500 block">Supply No</span>
-                <span className="font-mono font-extrabold text-slate-900 text-sm">
-                  {printSlipDelivery.supplyNo}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-500 block">Delivery Date & Type</span>
-                <span className="font-mono font-bold text-slate-900">
-                  {printSlipDelivery.deliveryDate} ({printSlipDelivery.deliveryType})
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-500 block">Buyer</span>
-                <span className="font-bold text-slate-900">{printSlipDelivery.buyer}</span>
-              </div>
-              <div>
-                <span className="text-slate-500 block">PO Number</span>
-                <span className="font-mono font-extrabold text-slate-900">{printSlipDelivery.po}</span>
-              </div>
-              <div>
-                <span className="text-slate-500 block">Style / Item</span>
-                <span className="font-semibold text-slate-800">
-                  {printSlipDelivery.style || '-'} · {printSlipDelivery.itemName || '-'}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-500 block">Rack / Lot No</span>
-                <span className="font-mono font-bold text-slate-800">
-                  {printSlipDelivery.rackCode || '-'} · {printSlipDelivery.lotNo || '-'}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-500 block">Fabric / Color / GSM</span>
-                <span className="font-semibold text-slate-800">
-                  {printSlipDelivery.fabricType || '-'} · {printSlipDelivery.color || '-'}{' '}
-                  {printSlipDelivery.gsm ? `(${printSlipDelivery.gsm})` : ''}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-500 block">Issued Weight & Rolls</span>
-                <span className="font-mono font-extrabold text-blue-800 text-sm">
-                  {fmtKg(printSlipDelivery.weightKg)} kg{' '}
-                  {printSlipDelivery.rollCount ? `(${printSlipDelivery.rollCount} Rolls)` : ''}
-                </span>
-              </div>
-              <div>
-                <span className="text-slate-500 block">Issued To</span>
-                <span className="font-bold text-slate-900">{printSlipDelivery.issuedTo}</span>
-              </div>
-              <div>
-                <span className="text-slate-500 block">Receiver / Store Officer</span>
-                <span className="font-semibold text-slate-800">
-                  {printSlipDelivery.receiverName || '-'} / @{printSlipDelivery.createdBy}
-                </span>
-              </div>
-              {printSlipDelivery.remark && (
-                <div className="col-span-2 pt-2 border-t border-slate-200">
-                  <span className="text-slate-500 block">Remark</span>
-                  <span className="text-slate-800">{printSlipDelivery.remark}</span>
-                </div>
-              )}
-            </div>
+      {/* ======================================================================== */}
+      {/* MODAL: SINGLE RACK FIXED QR TAG                                          */}
+      {/* ======================================================================== */}
+      {qrModalRack && (
+        <RackQrModal
+          rackSummary={qrModalRack}
+          onClose={() => setQrModalRack(null)}
+          onPreviewPublicView={(rackCode) => {
+            setQrModalRack(null);
+            setSelectedRackId(null);
+            if (onPreviewPublicRack) onPreviewPublicRack(rackCode);
+          }}
+        />
+      )}
 
-            <div className="grid grid-cols-3 gap-6 pt-6 text-center text-xs text-slate-500">
-              <div className="border-t border-slate-300 pt-1.5">Issued By</div>
-              <div className="border-t border-slate-300 pt-1.5">Received By</div>
-              <div className="border-t border-slate-300 pt-1.5">Store In-Charge</div>
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2 print:hidden">
-              <button
-                onClick={() => setPrintSlipDelivery(null)}
-                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer"
-              >
-                Close
-              </button>
-              <button
-                onClick={() => window.print()}
-                className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl cursor-pointer flex items-center gap-1.5"
-              >
-                <Printer size={14} />
-                <span>Print Slip</span>
-              </button>
-            </div>
-          </div>
-        </div>
+      {/* ======================================================================== */}
+      {/* MODAL: BULK PRINT ALL RACK QR LABELS                                     */}
+      {/* ======================================================================== */}
+      {showBulkQrModal && (
+        <BulkRackQrPrintModal
+          rackSummaries={rackSummaries}
+          onClose={() => setShowBulkQrModal(false)}
+        />
       )}
     </div>
   );
