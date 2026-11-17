@@ -384,37 +384,65 @@ export default function App() {
       }
 
       return new Promise((resolve) => {
-        Papa.parse(csvText, {
-          header: true,
+        // Parse with header: false to avoid PapaParse "Duplicate headers found and renamed." warnings
+        // on Google Sheets that contain blank or repeated column headers
+        Papa.parse<string[]>(csvText, {
+          header: false,
           skipEmptyLines: 'greedy',
           complete: (results) => {
-            if (!results.data || !Array.isArray(results.data)) {
+            const rawRows = results.data;
+            if (!Array.isArray(rawRows) || rawRows.length < 2) {
               resolve([]);
               return;
             }
-            const cleaned = (results.data as any[]).map((row, idx) => {
-              if (!row || typeof row !== 'object') return null;
-              const newRow: any = { _tabSource: tabItem.name };
-              Object.keys(row).forEach(key => {
-                const normKey = normalizeHeader(key);
-                if (normKey) {
-                  const cellVal = row[key];
-                  if (newRow[normKey] === undefined || newRow[normKey] === '') {
-                    newRow[normKey] = typeof cellVal === 'string' ? cellVal.trim() : cellVal;
+
+            const headerRow = rawRows[0] || [];
+            const colNormKeys = headerRow.map((rawHeader) =>
+              normalizeHeader(String(rawHeader ?? ''))
+            );
+
+            const cleaned = rawRows
+              .slice(1)
+              .map((cells, idx) => {
+                if (!Array.isArray(cells)) return null;
+                const newRow: any = { _tabSource: tabItem.name };
+                for (let c = 0; c < cells.length; c++) {
+                  const normKey = colNormKeys[c];
+                  if (!normKey) continue;
+                  const rawVal = cells[c];
+                  const cellStr = typeof rawVal === 'string' ? rawVal.trim() : rawVal;
+                  if (
+                    cellStr !== undefined &&
+                    cellStr !== null &&
+                    cellStr !== '' &&
+                    (newRow[normKey] === undefined || newRow[normKey] === '')
+                  ) {
+                    newRow[normKey] = cellStr;
                   }
                 }
-              });
-              // Skip repeated header rows embedded mid-sheet
-              if (
-                String(newRow['PO'] || '').trim().toUpperCase() === 'PO' &&
-                String(newRow['STYLE'] || '').trim().toUpperCase() === 'STYLE'
-              ) {
-                return null;
-              }
-              // Assign a unique row ID for line allocation
-              newRow._uniqueKey = getOrderRowKey(newRow, idx);
-              return newRow;
-            }).filter(row => row && Object.values(row).some(v => v !== undefined && v !== null && v !== '' && v !== row._tabSource));
+                // Skip repeated header rows embedded mid-sheet
+                if (
+                  String(newRow['PO'] || '').trim().toUpperCase() === 'PO' &&
+                  String(newRow['STYLE'] || '').trim().toUpperCase() === 'STYLE'
+                ) {
+                  return null;
+                }
+                // Assign a unique row ID for line allocation
+                newRow._uniqueKey = getOrderRowKey(newRow, idx);
+                return newRow;
+              })
+              .filter(
+                (row) =>
+                  row &&
+                  Object.values(row).some(
+                    (v) =>
+                      v !== undefined &&
+                      v !== null &&
+                      v !== '' &&
+                      v !== row._tabSource &&
+                      v !== row._uniqueKey
+                  )
+              );
             resolve(cleaned);
           },
           error: () => resolve([])

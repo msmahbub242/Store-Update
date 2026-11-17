@@ -23,12 +23,6 @@ import {
   UserPlus,
   Warehouse,
   BookmarkCheck,
-  Split,
-  LayoutGrid,
-  Table as TableIcon,
-  Layers,
-  ChevronDown,
-  ChevronUp,
   Sliders,
   QrCode,
 } from 'lucide-react';
@@ -81,6 +75,9 @@ import {
   EnrichedReceivingBatch,
 } from './fabric-store/MultiPoDeliverySection';
 import { RackStockSection } from './fabric-store/RackStockSection';
+import { FabricBookingSection } from './fabric-store/FabricBookingSection';
+import { FabricReceivingSection } from './fabric-store/FabricReceivingSection';
+import { PoBalanceSection } from './fabric-store/PoBalanceSection';
 import { BulkRackQrPrintModal, RackQrModal } from './fabric-store/RackQrModal';
 import { RackSummaryItem, getZoneColorPalette } from './fabric-store/rackZoneTheme';
 
@@ -660,6 +657,14 @@ export default function FabricStoreTab({
   const [transferSplitKg, setTransferSplitKg] = useState<string>('');
 
   const rackZones = useMemo(() => Array.from(new Set(racks.map((r) => r.zone))).filter(Boolean), [racks]);
+
+  const rackZoneByCode = useMemo(() => {
+    const map: Record<string, string> = {};
+    racks.forEach((r) => {
+      if (r.code) map[r.code] = r.zone || 'General Store';
+    });
+    return map;
+  }, [racks]);
 
   const filteredRackSummaries = useMemo(() => {
     const q = rackSearch.trim().toLowerCase();
@@ -1904,1339 +1909,150 @@ export default function FabricStoreTab({
       {/* SUB-TAB 2: FABRIC BOOKING / REQUIREMENTS (Before Receiving)              */}
       {/* ======================================================================== */}
       {activeSubTab === 'requirements' && (
-        <div className="space-y-6">
-          {rolePerms?.canBook ? (
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-              {/* Pick PO from All Buyers */}
-              <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
-                <div className="pb-2.5 border-b border-slate-200">
-                  <h3 className="text-sm font-extrabold text-slate-900">
-                    1. Select Buyer PO (from All Buyers)
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    Book required fabric type, color, GSM & kg before fabric arrives
-                  </p>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <div className="relative flex-1">
-                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
-                    <input
-                      type="text"
-                      value={reqPoSearch}
-                      onChange={(e) => setReqPoSearch(e.target.value)}
-                      placeholder="Search PO, Style, File, Buyer..."
-                      className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                  <select
-                    value={reqBuyerFilter}
-                    onChange={(e) => setReqBuyerFilter(e.target.value)}
-                    className="px-2.5 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 max-w-[140px] outline-none"
-                  >
-                    <option value="ALL">All Buyers</option>
-                    {sheetBuyerNames.map((b) => (
-                      <option key={b} value={b}>
-                        {b}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div className="max-h-80 overflow-y-auto divide-y divide-slate-200 border border-slate-200 rounded-xl">
-                  {reqMatchingSheetOrders.length === 0 ? (
-                    <div className="p-6 text-center text-xs text-slate-500">No POs match "{reqPoSearch}".</div>
-                  ) : (
-                    reqMatchingSheetOrders.map((order, idx) => {
-                      const poStr = String(order['PO'] || '').trim();
-                      const buyerStr = String(order._tabSource || '').trim();
-                      const isSelected =
-                        selectedOrderForReq?.po === poStr &&
-                        selectedOrderForReq?.buyer === buyerStr &&
-                        selectedOrderForReq?.style === String(order['STYLE'] || '').trim();
-                      const existingReqCount = enrichedRequirements.filter(
-                        (r) => r.po === poStr && r.buyer === buyerStr
-                      ).length;
-
-                      return (
-                        <button
-                          key={`req_pick_${order._uniqueKey || idx}`}
-                          type="button"
-                          onClick={() =>
-                            setSelectedOrderForReq({
-                              buyer: buyerStr,
-                              po: poStr,
-                              style: String(order['STYLE'] || '').trim(),
-                              itemName: String(order['ITEM'] || '').trim(),
-                              fileNo: String(order['File No'] || '').trim(),
-                              shipDate: String(order['SHIP DATE'] || '').trim(),
-                              orderDzn: String(order['DZN'] || '').trim(),
-                            })
-                          }
-                          className={`w-full text-left p-3 transition cursor-pointer flex items-start justify-between gap-2 ${
-                            isSelected ? 'bg-blue-50' : 'bg-white hover:bg-slate-50'
-                          }`}
-                        >
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2 text-xs">
-                              <span className="font-extrabold text-slate-900 font-mono">PO {poStr}</span>
-                              <span className="text-slate-400">·</span>
-                              <span className="font-bold text-blue-800">{buyerStr}</span>
-                              {existingReqCount > 0 && (
-                                <span className="text-[11px] font-bold text-emerald-700">
-                                  ({existingReqCount} booked)
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-xs font-semibold text-slate-800 truncate mt-0.5">
-                              {order['STYLE'] || '-'} — {order['ITEM'] || '-'}
-                            </p>
-                            <p className="text-xs text-slate-500 font-mono mt-0.5">
-                              File {order['File No'] || '-'} · Ship {order['SHIP DATE'] || '-'}
-                            </p>
-                          </div>
-                          {isSelected && <CheckCircle2 size={16} className="text-blue-600 shrink-0 mt-0.5" />}
-                        </button>
-                      );
-                    })
-                  )}
-                </div>
-              </div>
-
-              {/* Add Fabric Requirement Form */}
-              <form
-                onSubmit={handleCreateRequirement}
-                className="lg:col-span-7 bg-white rounded-2xl border border-slate-200 p-5 space-y-4"
-              >
-                <div className="pb-2.5 border-b border-slate-200">
-                  <h3 className="text-sm font-extrabold text-slate-900">
-                    2. Enter Required Fabric Specs & Quantity
-                  </h3>
-                  <p className="text-xs text-slate-500">
-                    These specs appear automatically at Receiving time when this PO is selected
-                  </p>
-                </div>
-
-                {selectedOrderForReq ? (
-                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs">
-                    <div>
-                      <span className="text-slate-500 block">Buyer</span>
-                      <span className="font-bold text-slate-900">{selectedOrderForReq.buyer}</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block">PO Number</span>
-                      <span className="font-extrabold text-blue-800 font-mono">{selectedOrderForReq.po}</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block">Ship Date</span>
-                      <span className="font-bold font-mono text-slate-800">{selectedOrderForReq.shipDate || '-'}</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block">Style</span>
-                      <span className="font-bold text-slate-800">{selectedOrderForReq.style || '-'}</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block">Item</span>
-                      <span className="font-bold text-slate-800">{selectedOrderForReq.itemName || '-'}</span>
-                    </div>
-                    <div>
-                      <span className="text-slate-500 block">File No / DZN</span>
-                      <span className="font-mono font-bold text-slate-800">
-                        {selectedOrderForReq.fileNo || '-'} · {selectedOrderForReq.orderDzn || '-'}
-                      </span>
-                    </div>
-                  </div>
-                ) : (
-                  <div className="p-3.5 rounded-xl border border-dashed border-slate-300 text-xs text-slate-500 text-center">
-                    Select a Buyer PO from the left list first.
-                  </div>
-                )}
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3.5">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Fabric Type *</label>
-                    <input
-                      type="text"
-                      required
-                      list="req-fabric-types"
-                      value={reqForm.fabricType}
-                      onChange={(e) => setReqForm((p) => ({ ...p, fabricType: e.target.value }))}
-                      placeholder="e.g. Single Jersey"
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                    />
-                    <datalist id="req-fabric-types">
-                      {FABRIC_TYPE_SUGGESTIONS.map((t) => (
-                        <option key={t} value={t} />
-                      ))}
-                    </datalist>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Color *</label>
-                    <input
-                      type="text"
-                      required
-                      value={reqForm.color}
-                      onChange={(e) => setReqForm((p) => ({ ...p, color: e.target.value }))}
-                      placeholder="e.g. Navy / Black"
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">GSM</label>
-                    <input
-                      type="text"
-                      value={reqForm.gsm}
-                      onChange={(e) => setReqForm((p) => ({ ...p, gsm: e.target.value }))}
-                      placeholder="e.g. 160 GSM"
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Required Qty (kg) *</label>
-                    <input
-                      type="number"
-                      step="0.01"
-                      min="0.01"
-                      required
-                      value={reqForm.requiredQtyKg}
-                      onChange={(e) => setReqForm((p) => ({ ...p, requiredQtyKg: e.target.value }))}
-                      placeholder="e.g. 1250.00"
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Expected Supplier</label>
-                    <input
-                      type="text"
-                      value={reqForm.supplier}
-                      onChange={(e) => setReqForm((p) => ({ ...p, supplier: e.target.value }))}
-                      placeholder="Optional"
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Note / Remark</label>
-                    <input
-                      type="text"
-                      value={reqForm.remark}
-                      onChange={(e) => setReqForm((p) => ({ ...p, remark: e.target.value }))}
-                      placeholder="Body / Neck / Rib note"
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                </div>
-
-                <div className="flex justify-end pt-1">
-                  <button
-                    type="submit"
-                    disabled={isSavingReq}
-                    className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl cursor-pointer disabled:opacity-50 flex items-center gap-2"
-                  >
-                    <BookmarkCheck size={15} />
-                    <span>{isSavingReq ? 'Saving Booking...' : 'Save Fabric Requirement'}</span>
-                  </button>
-                </div>
-              </form>
-            </div>
-          ) : null}
-
-          {/* Booked Fabric Requirements List */}
-          <div className="bg-white rounded-2xl border border-slate-300 shadow-xs overflow-hidden">
-            <div className="p-4 md:p-5 border-b border-slate-300 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
-                <h3 className="text-base font-extrabold text-slate-900">PO Fabric Booking & Fulfillment Tracker</h3>
-                <p className="text-xs text-slate-600 mt-0.5">{filteredRequirementsTable.length} requirement entry(ies)</p>
-              </div>
-              <div className="flex items-center gap-2.5">
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
-                  <input
-                    type="text"
-                    value={reqTableSearch}
-                    onChange={(e) => setReqTableSearch(e.target.value)}
-                    placeholder="Search PO, Buyer, Color..."
-                    className="pl-8 pr-3 py-1.5 bg-white border border-slate-300 rounded-xl text-[13px] outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-                {rolePerms?.canExport && (
-                  <button
-                    onClick={() =>
-                      exportCsvFile(
-                        `fabric_requirements_${todayISO()}.csv`,
-                        ['Buyer', 'PO', 'Style', 'Item', 'Ship Date', 'Fabric Type', 'Color', 'GSM', 'Required (kg)', 'Received (kg)', 'Pending (kg)', 'Supplier'],
-                        filteredRequirementsTable.map((r) => [
-                          r.buyer,
-                          r.po,
-                          r.style || '',
-                          r.itemName || '',
-                          r.shipDate || '',
-                          r.fabricType,
-                          r.color,
-                          r.gsm || '',
-                          r.requiredQtyKg.toFixed(2),
-                          r.receivedKg.toFixed(2),
-                          r.pendingKg.toFixed(2),
-                          r.supplier || '',
-                        ])
-                      )
-                    }
-                    className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-xs font-bold text-slate-800 flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Download size={13} />
-                    <span>CSV</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-[13px]">
-                <thead className="bg-slate-100 text-slate-800 uppercase text-xs font-extrabold">
-                  <tr>
-                    <th className="p-3.5 border-b border-r border-slate-300">Buyer / PO / Style</th>
-                    <th className="p-3.5 border-b border-r border-slate-300">Fabric Type / Color / GSM</th>
-                    <th className="p-3.5 border-b border-r border-slate-300">Supplier</th>
-                    <th className="p-3.5 border-b border-r border-slate-300 text-right">Required</th>
-                    <th className="p-3.5 border-b border-r border-slate-300 text-right">Received</th>
-                    <th className="p-3.5 border-b border-r border-slate-300 text-right">Pending</th>
-                    <th className="p-3.5 border-b border-r border-slate-300">Progress</th>
-                    <th className="p-3.5 border-b border-slate-300 text-center">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200">
-                  {filteredRequirementsTable.length === 0 ? (
-                    <tr>
-                      <td colSpan={8} className="p-8 text-center text-slate-500">
-                        No fabric requirements booked yet. Select a PO above to enter required qty before receiving.
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredRequirementsTable.map((r) => (
-                      <tr key={r.id} className="hover:bg-slate-50">
-                        <td className="p-3">
-                          <div className="font-extrabold text-slate-900 font-mono">PO {r.po}</div>
-                          <div className="text-slate-600">{r.buyer} · {r.style || '-'}</div>
-                          <div className="text-slate-400">Ship: {r.shipDate || '-'}</div>
-                        </td>
-                        <td className="p-3">
-                          <div className="font-bold text-slate-800">{r.fabricType}</div>
-                          <div className="text-slate-600">{r.color} {r.gsm ? `· ${r.gsm}` : ''}</div>
-                        </td>
-                        <td className="p-3 text-slate-700">{r.supplier || '-'}</td>
-                        <td className="p-3 text-right font-mono tabular-nums font-bold text-slate-900 whitespace-nowrap">
-                          {fmtKg(r.requiredQtyKg)} kg
-                        </td>
-                        <td className="p-3 text-right font-mono tabular-nums font-bold text-emerald-700 whitespace-nowrap">
-                          {fmtKg(r.receivedKg)} kg
-                        </td>
-                        <td className="p-3 text-right font-mono tabular-nums font-extrabold text-amber-700 whitespace-nowrap">
-                          {fmtKg(r.pendingKg)} kg
-                        </td>
-                        <td className="p-3 min-w-[110px]">
-                          <div className="flex items-center gap-2">
-                            <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
-                              <div
-                                className={`h-full rounded-full ${r.isComplete ? 'bg-emerald-600' : 'bg-blue-600'}`}
-                                style={{ width: `${r.pct}%` }}
-                              />
-                            </div>
-                            <span className="font-mono font-bold text-slate-600">{r.pct}%</span>
-                          </div>
-                        </td>
-                        <td className="p-3 text-center whitespace-nowrap">
-                          <div className="flex items-center justify-center gap-1.5">
-                            {rolePerms?.canBook && (
-                              <button
-                                onClick={() => {
-                                  setEditingReq(r);
-                                  setEditReqQty(String(r.requiredQtyKg));
-                                }}
-                                className="p-1 rounded text-slate-600 hover:bg-slate-100 cursor-pointer"
-                                title="Edit required qty"
-                              >
-                                <Edit3 size={13} />
-                              </button>
-                            )}
-                            {rolePerms?.canDeleteRecords && (
-                              <button
-                                onClick={async () => {
-                                  await deleteFabricRequirement(r.id);
-                                  showToast('success', `Requirement for PO ${r.po} deleted.`);
-                                }}
-                                className="p-1 rounded text-rose-500 hover:bg-rose-50 cursor-pointer"
-                                title="Delete booking"
-                              >
-                                <Trash2 size={13} />
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+        <FabricBookingSection
+          canBook={Boolean(rolePerms?.canBook)}
+          canDeleteRecords={Boolean(rolePerms?.canDeleteRecords)}
+          canExport={Boolean(rolePerms?.canExport)}
+          sheetBuyerNames={sheetBuyerNames}
+          reqPoSearch={reqPoSearch}
+          onReqPoSearchChange={setReqPoSearch}
+          reqBuyerFilter={reqBuyerFilter}
+          onReqBuyerFilterChange={setReqBuyerFilter}
+          reqMatchingSheetOrders={reqMatchingSheetOrders}
+          selectedOrderForReq={selectedOrderForReq}
+          onSelectOrderForReq={setSelectedOrderForReq}
+          reqForm={reqForm}
+          onReqFormChange={setReqForm}
+          isSavingReq={isSavingReq}
+          onSubmitRequirement={handleCreateRequirement}
+          fabricTypeSuggestions={FABRIC_TYPE_SUGGESTIONS}
+          enrichedRequirements={enrichedRequirements}
+          reqTableSearch={reqTableSearch}
+          onReqTableSearchChange={setReqTableSearch}
+          onExportCsv={(rows) =>
+            exportCsvFile(
+              `fabric_requirements_${todayISO()}.csv`,
+              ['Buyer', 'PO', 'Style', 'Item', 'Ship Date', 'Fabric Type', 'Color', 'GSM', 'Required (kg)', 'Received (kg)', 'Pending (kg)', 'Supplier'],
+              rows.map((r) => [
+                r.buyer,
+                r.po,
+                r.style || '',
+                r.itemName || '',
+                r.shipDate || '',
+                r.fabricType,
+                r.color,
+                r.gsm || '',
+                r.requiredQtyKg.toFixed(2),
+                r.receivedKg.toFixed(2),
+                r.pendingKg.toFixed(2),
+                r.supplier || '',
+              ])
+            )
+          }
+          onEditReqQty={(r) => {
+            setEditingReq(r);
+            setEditReqQty(String(r.requiredQtyKg));
+          }}
+          onDeleteReq={async (r) => {
+            await deleteFabricRequirement(r.id);
+            showToast('success', `Requirement for PO ${r.po} deleted.`);
+          }}
+        />
       )}
 
       {/* ======================================================================== */}
       {/* SUB-TAB 3: CHALLAN-WISE MULTI-PO BULK RECEIVING & SHARED RACK SPLIT      */}
       {/* ======================================================================== */}
       {activeSubTab === 'receiving' && (
-        <div className="space-y-6">
-          {rolePerms?.canReceive ? (
-            <form onSubmit={handleSaveFullChallan} className="space-y-5">
-              {/* Step 1: Challan Master Header */}
-              <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-3">
-                <div className="pb-2.5 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                  <div>
-                    <h3 className="text-sm font-extrabold text-slate-900">
-                      1. Challan Header (Multi-PO Bulk Receiving)
-                    </h3>
-                    <p className="text-xs text-slate-500">
-                      Enter challan details once, then add one or several Buyer POs below
-                    </p>
-                  </div>
-                  <span className="text-xs font-mono font-bold text-slate-700 bg-slate-100 px-3 py-1 rounded-lg">
-                    {challanLines.length} Line(s) · Total{' '}
-                    {fmtKg(challanLines.reduce((s, l) => s + (parseFloat(l.weightKg) || 0), 0))} kg
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Challan No *</label>
-                    <input
-                      type="text"
-                      required
-                      value={challanHeader.challanNo}
-                      onChange={(e) => setChallanHeader((p) => ({ ...p, challanNo: e.target.value }))}
-                      placeholder="e.g. CH-2026-8821"
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono font-bold outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Receiving Date *</label>
-                    <input
-                      type="date"
-                      required
-                      value={challanHeader.receiveDate}
-                      onChange={(e) => setChallanHeader((p) => ({ ...p, receiveDate: e.target.value }))}
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-mono outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Supplier *</label>
-                    <input
-                      type="text"
-                      required
-                      value={challanHeader.supplier}
-                      onChange={(e) => setChallanHeader((p) => ({ ...p, supplier: e.target.value }))}
-                      placeholder="e.g. Four H Dyeing / Knit Asia"
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">Challan Remark</label>
-                    <input
-                      type="text"
-                      value={challanHeader.remark}
-                      onChange={(e) => setChallanHeader((p) => ({ ...p, remark: e.target.value }))}
-                      placeholder="General note across challan"
-                      className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                    />
-                  </div>
-                </div>
-              </div>
-
-              {/* Step 2: Pick PO(s) & Load Pre-Booked Required Qty Lines */}
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-                {/* Left: Searchable PO Picker */}
-                <div className="lg:col-span-5 bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
-                  <div className="flex items-center justify-between gap-2 pb-2.5 border-b border-slate-200">
-                    <div>
-                      <h3 className="text-sm font-extrabold text-slate-900">
-                        2. Search & Select PO (All Buyers)
-                      </h3>
-                      <p className="text-xs text-slate-500">Pick multiple POs for this single challan</p>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setIsManualPoMode((v) => !v);
-                        setSelectedOrderForRec(null);
-                      }}
-                      className="text-xs font-bold text-blue-700 hover:underline cursor-pointer shrink-0"
-                    >
-                      {isManualPoMode ? 'Pick from Sheet' : 'Manual PO'}
-                    </button>
-                  </div>
-
-                  {!isManualPoMode ? (
-                    <>
-                      <div className="flex items-center gap-2">
-                        <div className="relative flex-1">
-                          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={15} />
-                          <input
-                            type="text"
-                            value={recPoSearch}
-                            onChange={(e) => setRecPoSearch(e.target.value)}
-                            placeholder="Search PO, Style, File, Buyer..."
-                            className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs outline-none focus:bg-white focus:ring-2 focus:ring-blue-500"
-                          />
-                        </div>
-                        <select
-                          value={recBuyerFilter}
-                          onChange={(e) => setRecBuyerFilter(e.target.value)}
-                          className="px-2.5 py-2 bg-slate-50 border border-slate-300 rounded-xl text-xs font-semibold text-slate-700 max-w-[130px] outline-none"
-                        >
-                          <option value="ALL">All Buyers</option>
-                          {sheetBuyerNames.map((b) => (
-                            <option key={b} value={b}>
-                              {b}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div className="max-h-72 overflow-y-auto divide-y divide-slate-200 border border-slate-200 rounded-xl">
-                        {recMatchingSheetOrders.length === 0 ? (
-                          <div className="p-6 text-center text-xs text-slate-500">
-                            No orders found matching "{recPoSearch}".
-                          </div>
-                        ) : (
-                          recMatchingSheetOrders.map((order, idx) => {
-                            const poStr = String(order['PO'] || '').trim();
-                            const buyerStr = String(order._tabSource || '').trim();
-                            const isSelected =
-                              selectedOrderForRec?.po === poStr &&
-                              selectedOrderForRec?.buyer === buyerStr &&
-                              selectedOrderForRec?.style === String(order['STYLE'] || '').trim();
-                            const bookedCount = enrichedRequirements.filter(
-                              (r) => r.po === poStr && r.buyer === buyerStr
-                            ).length;
-
-                            return (
-                              <button
-                                key={`rec_po_${order._uniqueKey || 'row'}_${idx}`}
-                                type="button"
-                                onClick={() => handleSelectSheetOrderForRec(order)}
-                                className={`w-full text-left p-3 transition cursor-pointer flex items-start justify-between gap-2 ${
-                                  isSelected ? 'bg-blue-50' : 'hover:bg-slate-50 bg-white'
-                                }`}
-                              >
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-2 text-xs">
-                                    <span className="font-extrabold text-slate-900 font-mono">PO {poStr}</span>
-                                    <span className="text-slate-400">·</span>
-                                    <span className="font-bold text-blue-800 truncate">{buyerStr}</span>
-                                    {bookedCount > 0 && (
-                                      <span className="text-[11px] font-bold text-emerald-700">
-                                        · {bookedCount} booked
-                                      </span>
-                                    )}
-                                  </div>
-                                  <p className="text-xs font-semibold text-slate-800 truncate mt-0.5">
-                                    {order['STYLE'] || '-'} — {order['ITEM'] || '-'}
-                                  </p>
-                                  <p className="text-xs text-slate-500 font-mono mt-0.5">
-                                    File {order['File No'] || '-'} · Ship {order['SHIP DATE'] || '-'}
-                                  </p>
-                                </div>
-                                {isSelected && <CheckCircle2 size={16} className="text-blue-600 shrink-0 mt-0.5" />}
-                              </button>
-                            );
-                          })
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="grid grid-cols-2 gap-2.5">
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">Buyer *</label>
-                        <input
-                          type="text"
-                          value={manualPoForm.buyer}
-                          onChange={(e) => setManualPoForm((p) => ({ ...p, buyer: e.target.value }))}
-                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">PO Number *</label>
-                        <input
-                          type="text"
-                          value={manualPoForm.po}
-                          onChange={(e) => setManualPoForm((p) => ({ ...p, po: e.target.value }))}
-                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-mono"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">Style</label>
-                        <input
-                          type="text"
-                          value={manualPoForm.style}
-                          onChange={(e) => setManualPoForm((p) => ({ ...p, style: e.target.value }))}
-                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold text-slate-700 mb-1">Ship Date</label>
-                        <input
-                          type="text"
-                          value={manualPoForm.shipDate}
-                          onChange={(e) => setManualPoForm((p) => ({ ...p, shipDate: e.target.value }))}
-                          className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs font-mono"
-                        />
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Right: Selected PO Booked Requirements + Add to Challan */}
-                <div className="lg:col-span-7 bg-white rounded-2xl border border-slate-200 p-4 space-y-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2 pb-2.5 border-b border-slate-200">
-                    <div>
-                      <h3 className="text-sm font-extrabold text-slate-900">
-                        3. Pre-Booked Fabric & Required Qty for Selected PO
-                      </h3>
-                      <p className="text-xs text-slate-500">
-                        Click a booked item to add it to this challan, or add a custom fabric row
-                      </p>
-                    </div>
-                    {(selectedOrderForRec || (isManualPoMode && manualPoForm.po)) && (
-                      <div className="flex items-center gap-2">
-                        {selectedPoRequirements.length > 0 && (
-                          <button
-                            type="button"
-                            onClick={addAllPendingReqsForPoToChallan}
-                            className="px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer"
-                          >
-                            + Add All ({selectedPoRequirements.length})
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={addCustomPoLineToChallan}
-                          className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-50 text-slate-800 text-xs font-bold cursor-pointer"
-                        >
-                          + Custom Line
-                        </button>
-                      </div>
-                    )}
-                  </div>
-
-                  {!(selectedOrderForRec || (isManualPoMode && manualPoForm.po)) ? (
-                    <div className="p-8 rounded-xl border border-dashed border-slate-300 text-center text-xs text-slate-500">
-                      Select a PO on the left to inspect its required fabric list and add items to this challan.
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {selectedOrderForRec && (
-                        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex flex-wrap items-center justify-between gap-2 text-xs">
-                          <div>
-                            <span className="font-extrabold text-slate-900 font-mono">
-                              PO {selectedOrderForRec.po}
-                            </span>
-                            <span className="text-slate-400 mx-1.5">·</span>
-                            <span className="font-bold text-blue-800">{selectedOrderForRec.buyer}</span>
-                            <span className="text-slate-400 mx-1.5">·</span>
-                            <span className="font-semibold text-slate-700">{selectedOrderForRec.style}</span>
-                          </div>
-                          <span className="font-mono text-slate-500">
-                            Ship {selectedOrderForRec.shipDate || '-'}
-                          </span>
-                        </div>
-                      )}
-
-                      {selectedPoRequirements.length === 0 ? (
-                        <div className="p-5 rounded-xl border border-dashed border-slate-300 text-center space-y-2">
-                          <p className="text-xs text-slate-600">
-                            No pre-entered fabric booking found for this PO yet.
-                          </p>
-                          <div className="flex items-center justify-center gap-2">
-                            <button
-                              type="button"
-                              onClick={addCustomPoLineToChallan}
-                              className="px-3.5 py-1.5 rounded-xl bg-slate-900 text-white text-xs font-bold cursor-pointer"
-                            >
-                              + Add Custom Fabric Line to Challan
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSelectedOrderForReq(selectedOrderForRec);
-                                setActiveSubTab('requirements');
-                              }}
-                              className="px-3.5 py-1.5 rounded-xl border border-slate-300 bg-white text-slate-700 text-xs font-bold cursor-pointer"
-                            >
-                              Book Required Qty First
-                            </button>
-                          </div>
-                        </div>
-                      ) : (
-                        <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl max-h-60 overflow-y-auto">
-                          {selectedPoRequirements.map((req) => (
-                            <div
-                              key={req.id}
-                              className="p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-slate-50 text-xs"
-                            >
-                              <div>
-                                <div className="font-bold text-slate-900">
-                                  {req.fabricType} · {req.color} {req.gsm ? `(${req.gsm})` : ''}
-                                </div>
-                                <div className="font-mono text-slate-600 mt-0.5">
-                                  Required: <strong>{fmtKg(req.requiredQtyKg)} kg</strong> · Received:{' '}
-                                  <strong className="text-emerald-700">{fmtKg(req.receivedKg)} kg</strong> · Pending:{' '}
-                                  <strong className="text-amber-700">{fmtKg(req.pendingKg)} kg</strong>
-                                </div>
-                              </div>
-                              <button
-                                type="button"
-                                onClick={() => addRequirementToChallan(req)}
-                                className="px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white font-bold cursor-pointer shrink-0"
-                              >
-                                + Add to Challan
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Step 4: Active Challan Bulk Staging List (with Shared Multi-Rack Split per line) */}
-              <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
-                <div className="p-4 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-sm font-extrabold text-slate-900">
-                      4. Challan Bulk Entry Queue ({challanLines.length} PO Line{challanLines.length === 1 ? '' : 's'})
-                    </h3>
-                    <p className="text-xs text-slate-500">
-                      Enter receiving qty & lot no. Use <strong>Split Racks</strong> on any line when rack capacity requires sharing fabric across multiple racks.
-                    </p>
-                  </div>
-                  {challanLines.length > 0 && (
-                    <button
-                      type="submit"
-                      disabled={isSubmittingChallan}
-                      className="px-5 py-2.5 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold rounded-xl transition cursor-pointer disabled:opacity-50 flex items-center gap-2 shrink-0"
-                    >
-                      <PackagePlus size={15} />
-                      <span>
-                        {isSubmittingChallan
-                          ? 'Saving Challan...'
-                          : `Save Full Challan (${challanLines.length} Line${challanLines.length === 1 ? '' : 's'})`}
-                      </span>
-                    </button>
-                  )}
-                </div>
-
-                {challanLines.length === 0 ? (
-                  <div className="p-8 text-center text-xs text-slate-500">
-                    No PO lines added to this challan yet. Search a PO above and click <strong>+ Add to Challan</strong>.
-                  </div>
-                ) : (
-                  <div className="divide-y divide-slate-200">
-                    {challanLines.map((line, idx) => {
-                      const splitSum = line.rackSplits.reduce(
-                        (s, sp) => s + (parseFloat(sp.weightKg) || 0),
-                        0
-                      );
-                      const targetWeight = parseFloat(line.weightKg) || 0;
-                      const splitMatches = Math.abs(splitSum - targetWeight) <= 0.05;
-
-                      return (
-                        <div key={line.localId} className="p-4 space-y-3 bg-white">
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex items-center gap-2 text-xs">
-                              <span className="font-mono font-extrabold bg-slate-900 text-white px-2 py-0.5 rounded">
-                                #{idx + 1}
-                              </span>
-                              <span className="font-extrabold font-mono text-slate-900">
-                                PO {line.po}
-                              </span>
-                              <span className="text-slate-400">·</span>
-                              <span className="font-bold text-blue-800">{line.buyer}</span>
-                              {line.style && (
-                                <>
-                                  <span className="text-slate-400">·</span>
-                                  <span className="text-slate-700 font-semibold">{line.style}</span>
-                                </>
-                              )}
-                              {line.requiredQtyKg > 0 && (
-                                <>
-                                  <span className="text-slate-400">·</span>
-                                  <span className="font-mono text-emerald-700 font-bold">
-                                    Req: {fmtKg(line.requiredQtyKg)} kg (Pending:{' '}
-                                    {fmtKg(Math.max(0, line.requiredQtyKg - line.alreadyReceivedKg))} kg)
-                                  </span>
-                                </>
-                              )}
-                            </div>
-
-                            <div className="flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateChallanLine(line.localId, {
-                                    isSplitRack: !line.isSplitRack,
-                                    rackSplits: !line.isSplitRack
-                                      ? [
-                                          { rackId: line.rackId || defaultRackId, weightKg: line.weightKg, rollCount: line.rollCount },
-                                          { rackId: racks[1]?.id || defaultRackId, weightKg: '', rollCount: '' },
-                                        ]
-                                      : line.rackSplits,
-                                  })
-                                }
-                                className={`px-2.5 py-1 rounded-lg border text-xs font-bold flex items-center gap-1 cursor-pointer ${
-                                  line.isSplitRack
-                                    ? 'bg-slate-900 text-white border-slate-900'
-                                    : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-50'
-                                }`}
-                                title="Share this fabric across multiple racks due to capacity limit"
-                              >
-                                <Split size={12} />
-                                <span>{line.isSplitRack ? 'Shared Racks Active' : 'Split Across Racks'}</span>
-                              </button>
-
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setChallanLines((prev) => prev.filter((l) => l.localId !== line.localId))
-                                }
-                                className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 cursor-pointer"
-                                title="Remove line from challan"
-                              >
-                                <X size={15} />
-                              </button>
-                            </div>
-                          </div>
-
-                          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-2.5 text-xs">
-                            <div>
-                              <label className="block font-bold text-slate-600 mb-1">Fabric Type *</label>
-                              <input
-                                type="text"
-                                required
-                                list="fabric-type-options"
-                                value={line.fabricType}
-                                onChange={(e) =>
-                                  updateChallanLine(line.localId, { fabricType: e.target.value })
-                                }
-                                className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg outline-none focus:bg-white focus:ring-1 focus:ring-blue-500"
-                              />
-                            </div>
-                            <div>
-                              <label className="block font-bold text-slate-600 mb-1">Color *</label>
-                              <input
-                                type="text"
-                                required
-                                value={line.color}
-                                onChange={(e) =>
-                                  updateChallanLine(line.localId, { color: e.target.value })
-                                }
-                                className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg outline-none focus:bg-white focus:ring-1 focus:ring-blue-500"
-                              />
-                            </div>
-                            <div>
-                              <label className="block font-bold text-slate-600 mb-1">GSM</label>
-                              <input
-                                type="text"
-                                value={line.gsm}
-                                onChange={(e) =>
-                                  updateChallanLine(line.localId, { gsm: e.target.value })
-                                }
-                                className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg font-mono outline-none focus:bg-white focus:ring-1 focus:ring-blue-500"
-                              />
-                            </div>
-                            <div>
-                              <label className="block font-bold text-slate-600 mb-1">Recv Qty (kg) *</label>
-                              <input
-                                type="number"
-                                step="0.01"
-                                min="0.01"
-                                required
-                                value={line.weightKg}
-                                onChange={(e) =>
-                                  updateChallanLine(line.localId, { weightKg: e.target.value })
-                                }
-                                className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg font-mono font-bold outline-none focus:bg-white focus:ring-1 focus:ring-blue-500"
-                              />
-                            </div>
-                            <div>
-                              <label className="block font-bold text-slate-600 mb-1">Rolls</label>
-                              <input
-                                type="number"
-                                min="0"
-                                value={line.rollCount}
-                                onChange={(e) =>
-                                  updateChallanLine(line.localId, { rollCount: e.target.value })
-                                }
-                                className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg font-mono outline-none focus:bg-white focus:ring-1 focus:ring-blue-500"
-                              />
-                            </div>
-                            <div>
-                              <label className="block font-bold text-slate-600 mb-1">Lot No *</label>
-                              <input
-                                type="text"
-                                required
-                                value={line.lotNo}
-                                onChange={(e) =>
-                                  updateChallanLine(line.localId, { lotNo: e.target.value })
-                                }
-                                placeholder="LOT-..."
-                                className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg font-mono outline-none focus:bg-white focus:ring-1 focus:ring-blue-500"
-                              />
-                            </div>
-                            {!line.isSplitRack ? (
-                              <div>
-                                <label className="block font-bold text-slate-600 mb-1">Storage Rack *</label>
-                                <select
-                                  value={line.rackId}
-                                  onChange={(e) =>
-                                    updateChallanLine(line.localId, { rackId: e.target.value })
-                                  }
-                                  className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg font-bold outline-none focus:bg-white"
-                                >
-                                  {rackSummaries
-                                    .filter((rs) => rs.rack.isActive)
-                                    .map((rs) => (
-                                      <option key={rs.rack.id} value={rs.rack.id}>
-                                        {rs.rack.code} (Free: {Math.round(rs.freeCapacityKg)} kg)
-                                      </option>
-                                    ))}
-                                </select>
-                              </div>
-                            ) : (
-                              <div>
-                                <label className="block font-bold text-slate-600 mb-1">Line Remark</label>
-                                <input
-                                  type="text"
-                                  value={line.remark}
-                                  onChange={(e) =>
-                                    updateChallanLine(line.localId, { remark: e.target.value })
-                                  }
-                                  placeholder="Note..."
-                                  className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-300 rounded-lg outline-none focus:bg-white"
-                                />
-                              </div>
-                            )}
-                          </div>
-
-                          {/* Shared Multi-Rack Split Panel */}
-                          {line.isSplitRack && (
-                            <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
-                              <div className="flex flex-wrap items-center justify-between gap-2">
-                                <span className="font-bold text-slate-800">
-                                  Shared Rack Allocation (Capacity Split)
-                                </span>
-                                <span
-                                  className={`font-mono font-bold ${
-                                    splitMatches && targetWeight > 0 ? 'text-emerald-700' : 'text-amber-700'
-                                  }`}
-                                >
-                                  Allocated: {fmtKg(splitSum)} / {fmtKg(targetWeight)} kg
-                                </span>
-                              </div>
-
-                              <div className="space-y-2">
-                                {line.rackSplits.map((sp, spIdx) => (
-                                  <div key={spIdx} className="grid grid-cols-12 gap-2 items-center">
-                                    <div className="col-span-5">
-                                      <select
-                                        value={sp.rackId}
-                                        onChange={(e) =>
-                                          updateChallanLineSplit(line.localId, spIdx, {
-                                            rackId: e.target.value,
-                                          })
-                                        }
-                                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-bold outline-none"
-                                      >
-                                        {rackSummaries
-                                          .filter((rs) => rs.rack.isActive)
-                                          .map((rs) => (
-                                            <option key={rs.rack.id} value={rs.rack.id}>
-                                              Rack {rs.rack.code} · Free {fmtKg(rs.freeCapacityKg)} kg
-                                            </option>
-                                          ))}
-                                      </select>
-                                    </div>
-                                    <div className="col-span-3">
-                                      <input
-                                        type="number"
-                                        step="0.01"
-                                        min="0"
-                                        value={sp.weightKg}
-                                        onChange={(e) =>
-                                          updateChallanLineSplit(line.localId, spIdx, {
-                                            weightKg: e.target.value,
-                                          })
-                                        }
-                                        placeholder="Weight kg"
-                                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono font-bold outline-none"
-                                      />
-                                    </div>
-                                    <div className="col-span-3">
-                                      <input
-                                        type="number"
-                                        min="0"
-                                        value={sp.rollCount}
-                                        onChange={(e) =>
-                                          updateChallanLineSplit(line.localId, spIdx, {
-                                            rollCount: e.target.value,
-                                          })
-                                        }
-                                        placeholder="Rolls"
-                                        className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg font-mono outline-none"
-                                      />
-                                    </div>
-                                    <div className="col-span-1 text-right">
-                                      {line.rackSplits.length > 2 && (
-                                        <button
-                                          type="button"
-                                          onClick={() =>
-                                            updateChallanLine(line.localId, {
-                                              rackSplits: line.rackSplits.filter((_, i) => i !== spIdx),
-                                            })
-                                          }
-                                          className="p-1 text-rose-500 hover:text-rose-700 cursor-pointer"
-                                        >
-                                          <X size={14} />
-                                        </button>
-                                      )}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  updateChallanLine(line.localId, {
-                                    rackSplits: [
-                                      ...line.rackSplits,
-                                      { rackId: defaultRackId, weightKg: '', rollCount: '' },
-                                    ],
-                                  })
-                                }
-                                className="text-xs font-bold text-blue-700 hover:underline cursor-pointer"
-                              >
-                                + Add Another Rack Share
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-
-                <datalist id="fabric-type-options">
-                  {FABRIC_TYPE_SUGGESTIONS.map((t) => (
-                    <option key={t} value={t} />
-                  ))}
-                </datalist>
-              </div>
-            </form>
-          ) : (
-            <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-xs text-amber-900">
-              Your role ({rolePerms?.label}) has view-only access to the Receiving Register.
-            </div>
-          )}
-
-          {/* Receiving Register (Grouped By Challan OR Flat Line Items) */}
-          <div className="bg-white rounded-2xl border border-slate-300 shadow-xs overflow-hidden">
-            <div className="p-4 md:p-5 border-b border-slate-300 bg-slate-50 flex flex-col md:flex-row md:items-center justify-between gap-3">
-              <div>
-                <h3 className="text-base font-extrabold text-slate-900">Fabric Receiving Register</h3>
-                <p className="text-xs text-slate-600 mt-0.5">
-                  {challanGroups.length} Challan(s) · {filteredReceivingsLedger.length} Rack Batch Entry(ies)
-                </p>
-              </div>
-              <div className="flex items-center gap-2.5 flex-wrap">
-                <div className="flex items-center bg-white p-1 rounded-xl border border-slate-300">
-                  <button
-                    onClick={() => setRecRegisterView('challan')}
-                    className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer flex items-center gap-1 ${
-                      recRegisterView === 'challan'
-                        ? 'bg-slate-900 text-white'
-                        : 'text-slate-600'
-                    }`}
-                  >
-                    <Layers size={12} />
-                    <span>By Challan</span>
-                  </button>
-                  <button
-                    onClick={() => setRecRegisterView('items')}
-                    className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer flex items-center gap-1 ${
-                      recRegisterView === 'items'
-                        ? 'bg-slate-900 text-white'
-                        : 'text-slate-600'
-                    }`}
-                  >
-                    <TableIcon size={12} />
-                    <span>All Lots</span>
-                  </button>
-                </div>
-
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
-                  <input
-                    type="text"
-                    value={recLedgerSearch}
-                    onChange={(e) => setRecLedgerSearch(e.target.value)}
-                    placeholder="Filter challan, PO, lot..."
-                    className="pl-8 pr-3 py-1.5 bg-white border border-slate-300 rounded-xl text-[13px] outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                </div>
-
-                {rolePerms?.canExport && (
-                  <button
-                    onClick={() =>
-                      exportCsvFile(
-                        `fabric_receiving_register_${todayISO()}.csv`,
-                        ['Date', 'Challan', 'Supplier', 'Rack', 'Buyer', 'PO', 'Style', 'Ship Date', 'Fabric Type', 'Color', 'GSM', 'Lot', 'Required (kg)', 'Received (kg)', 'Delivered (kg)', 'Balance (kg)', 'Remark'],
-                        filteredReceivingsLedger.map((r) => [
-                          r.receiveDate,
-                          r.challanNo,
-                          r.supplier,
-                          r.rackCode,
-                          r.buyer,
-                          r.po,
-                          r.style || '',
-                          r.shipDate || '',
-                          r.fabricType,
-                          r.color,
-                          r.gsm || '',
-                          r.lotNo,
-                          (r.requiredQtyKg || 0).toFixed(2),
-                          r.weightKg.toFixed(2),
-                          r.deliveredKg.toFixed(2),
-                          r.availableKg.toFixed(2),
-                          r.remark || '',
-                        ])
-                      )
-                    }
-                    className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-xs font-bold text-slate-800 flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Download size={13} />
-                    <span>CSV</span>
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {recRegisterView === 'challan' ? (
-              <div className="divide-y divide-slate-200">
-                {challanGroups.length === 0 ? (
-                  <div className="p-8 text-center text-xs text-slate-500">
-                    No challan entries recorded yet.
-                  </div>
-                ) : (
-                  challanGroups.map((grp) => {
-                    const isExpanded = expandedChallans[grp.groupKey] ?? true;
-                    return (
-                      <div key={grp.groupKey} className="bg-white">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setExpandedChallans((prev) => ({
-                              ...prev,
-                              [grp.groupKey]: !isExpanded,
-                            }))
-                          }
-                          className="w-full p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-slate-50 text-left cursor-pointer"
-                        >
-                          <div className="flex items-center gap-3 flex-wrap">
-                            <span className="font-mono font-extrabold text-sm text-slate-900">
-                              Challan {grp.challanNo}
-                            </span>
-                            <span className="text-slate-400">·</span>
-                            <span className="text-xs font-mono text-slate-600">{grp.receiveDate}</span>
-                            <span className="text-slate-400">·</span>
-                            <span className="text-xs font-bold text-slate-800">{grp.supplier}</span>
-                            <span className="text-slate-400">·</span>
-                            <span className="text-xs text-blue-800 font-semibold">
-                              {grp.pos.size} PO(s): {Array.from(grp.pos).slice(0, 4).join(', ')}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-4 text-xs font-mono shrink-0">
-                            <span>
-                              Recv: <strong className="text-slate-900">{fmtKg(grp.totalWeightKg)} kg</strong>
-                            </span>
-                            <span>
-                              Bal: <strong className="text-emerald-700">{fmtKg(grp.totalBalanceKg)} kg</strong>
-                            </span>
-                            <span className="text-slate-500">
-                              Racks: {Array.from(grp.racks).join(', ')}
-                            </span>
-                            {isExpanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
-                          </div>
-                        </button>
-
-                        {isExpanded && (
-                          <div className="overflow-x-auto border-t border-slate-100 bg-slate-50/50">
-                            <table className="w-full text-left border-collapse text-xs">
-                              <thead className="bg-slate-100/80 text-slate-600 uppercase font-bold">
-                                <tr>
-                                  <th className="p-2.5 border-b border-slate-200">Rack</th>
-                                  <th className="p-2.5 border-b border-slate-200">Buyer / PO / Style</th>
-                                  <th className="p-2.5 border-b border-slate-200">Fabric / Color / Lot</th>
-                                  <th className="p-2.5 border-b border-slate-200 text-right">Required</th>
-                                  <th className="p-2.5 border-b border-slate-200 text-right">Received</th>
-                                  <th className="p-2.5 border-b border-slate-200 text-right">Balance</th>
-                                  <th className="p-2.5 border-b border-slate-200 text-center">Actions</th>
-                                </tr>
-                              </thead>
-                              <tbody className="divide-y divide-slate-200 bg-white">
-                                {grp.items.map((r) => (
-                                  <tr key={r.id} className="hover:bg-slate-50">
-                                    <td className="p-2.5 font-mono font-bold text-slate-900">
-                                      Rack {r.rackCode}
-                                    </td>
-                                    <td className="p-2.5">
-                                      <span className="font-mono font-extrabold text-slate-900">PO {r.po}</span>
-                                      <span className="text-slate-400 mx-1">·</span>
-                                      <span className="text-blue-800 font-semibold">{r.buyer}</span>
-                                      {r.style && <div className="text-slate-500">{r.style}</div>}
-                                    </td>
-                                    <td className="p-2.5">
-                                      <span className="font-bold text-slate-800">{r.fabricType}</span> · {r.color}
-                                      <div className="font-mono text-slate-500">
-                                        Lot {r.lotNo} {r.gsm ? `· ${r.gsm}` : ''}
-                                      </div>
-                                    </td>
-                                    <td className="p-2.5 text-right font-mono tabular-nums text-slate-600">
-                                      {r.requiredQtyKg ? `${fmtKg(r.requiredQtyKg)} kg` : '-'}
-                                    </td>
-                                    <td className="p-2.5 text-right font-mono tabular-nums font-bold text-slate-900">
-                                      {fmtKg(r.weightKg)} kg
-                                    </td>
-                                    <td className="p-2.5 text-right font-mono tabular-nums font-extrabold text-emerald-700">
-                                      {fmtKg(r.availableKg)} kg
-                                    </td>
-                                    <td className="p-2.5 text-center whitespace-nowrap">
-                                      <div className="flex items-center justify-center gap-1.5">
-                                        {rolePerms?.canDeliver && r.availableKg > 0.009 && (
-                                          <button
-                                            onClick={() => {
-                                              selectBatchForDelivery(r, 'Partial');
-                                              setActiveSubTab('delivery');
-                                            }}
-                                            className="px-2 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold cursor-pointer"
-                                          >
-                                            Deliver
-                                          </button>
-                                        )}
-                                        {rolePerms?.canDeleteRecords && (
-                                          <button
-                                            onClick={() => handleDeleteReceivingRecord(r)}
-                                            className="p-1 rounded-lg text-rose-500 hover:bg-rose-50 cursor-pointer"
-                                            title="Delete batch"
-                                          >
-                                            <Trash2 size={13} />
-                                          </button>
-                                        )}
-                                      </div>
-                                    </td>
-                                  </tr>
-                                ))}
-                              </tbody>
-                            </table>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left border-collapse text-xs">
-                  <thead className="bg-slate-100 text-slate-700 uppercase font-bold">
-                    <tr>
-                      <th className="p-3 border-b border-slate-200">Date / Challan</th>
-                      <th className="p-3 border-b border-slate-200">Rack</th>
-                      <th className="p-3 border-b border-slate-200">Buyer / PO / Style</th>
-                      <th className="p-3 border-b border-slate-200">Fabric / Color / Lot</th>
-                      <th className="p-3 border-b border-slate-200 text-right">Received</th>
-                      <th className="p-3 border-b border-slate-200 text-right">Balance</th>
-                      <th className="p-3 border-b border-slate-200 text-center">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-200">
-                    {filteredReceivingsLedger.length === 0 ? (
-                      <tr>
-                        <td colSpan={7} className="p-8 text-center text-slate-500">
-                          No fabric receiving records yet.
-                        </td>
-                      </tr>
-                    ) : (
-                      filteredReceivingsLedger.map((r) => (
-                        <tr key={r.id} className="hover:bg-slate-50">
-                          <td className="p-3 font-mono whitespace-nowrap">
-                            <div className="font-bold text-slate-900">{r.challanNo}</div>
-                            <div className="text-slate-500">{r.receiveDate}</div>
-                          </td>
-                          <td className="p-3 font-mono font-bold text-slate-900 whitespace-nowrap">
-                            {r.rackCode}
-                          </td>
-                          <td className="p-3">
-                            <div className="font-extrabold text-slate-900 font-mono">PO {r.po}</div>
-                            <div className="text-slate-600">{r.buyer} · {r.style || '-'}</div>
-                          </td>
-                          <td className="p-3">
-                            <div className="font-bold text-slate-800">{r.fabricType} · {r.color}</div>
-                            <div className="font-mono text-slate-500">Lot {r.lotNo}</div>
-                          </td>
-                          <td className="p-3 text-right font-mono tabular-nums font-bold text-slate-800 whitespace-nowrap">
-                            {fmtKg(r.weightKg)} kg
-                          </td>
-                          <td className="p-3 text-right font-mono tabular-nums font-extrabold text-emerald-700 whitespace-nowrap">
-                            {fmtKg(r.availableKg)} kg
-                          </td>
-                          <td className="p-3 text-center whitespace-nowrap">
-                            <div className="flex items-center justify-center gap-1.5">
-                              {rolePerms?.canDeliver && r.availableKg > 0.009 && (
-                                <button
-                                  onClick={() => {
-                                    selectBatchForDelivery(r, 'Partial');
-                                    setActiveSubTab('delivery');
-                                  }}
-                                  className="px-2 py-1 rounded-lg bg-blue-50 hover:bg-blue-100 text-blue-700 font-bold cursor-pointer"
-                                >
-                                  Deliver
-                                </button>
-                              )}
-                              {rolePerms?.canDeleteRecords && (
-                                <button
-                                  onClick={() => handleDeleteReceivingRecord(r)}
-                                  className="p-1 rounded-lg text-rose-500 hover:bg-rose-50 cursor-pointer"
-                                  title="Delete receiving entry"
-                                >
-                                  <Trash2 size={14} />
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
+        <FabricReceivingSection
+          canReceive={Boolean(rolePerms?.canReceive)}
+          canDeliver={Boolean(rolePerms?.canDeliver)}
+          canDeleteRecords={Boolean(rolePerms?.canDeleteRecords)}
+          canExport={Boolean(rolePerms?.canExport)}
+          roleLabel={rolePerms?.label || 'Viewer'}
+          challanHeader={challanHeader}
+          onChallanHeaderChange={setChallanHeader}
+          challanLines={challanLines}
+          onRemoveChallanLine={(localId) =>
+            setChallanLines((prev) => prev.filter((l) => l.localId !== localId))
+          }
+          onUpdateChallanLine={updateChallanLine}
+          onUpdateChallanLineSplit={updateChallanLineSplit}
+          isSubmittingChallan={isSubmittingChallan}
+          onSaveFullChallan={handleSaveFullChallan}
+          isManualPoMode={isManualPoMode}
+          onToggleManualPoMode={() => {
+            setIsManualPoMode((v) => !v);
+            setSelectedOrderForRec(null);
+          }}
+          manualPoForm={manualPoForm}
+          onManualPoFormChange={setManualPoForm}
+          recPoSearch={recPoSearch}
+          onRecPoSearchChange={setRecPoSearch}
+          recBuyerFilter={recBuyerFilter}
+          onRecBuyerFilterChange={setRecBuyerFilter}
+          sheetBuyerNames={sheetBuyerNames}
+          recMatchingSheetOrders={recMatchingSheetOrders}
+          selectedOrderForRec={selectedOrderForRec}
+          onSelectSheetOrderForRec={handleSelectSheetOrderForRec}
+          enrichedRequirements={enrichedRequirements}
+          selectedPoRequirements={selectedPoRequirements}
+          onAddAllPendingReqsForPo={addAllPendingReqsForPoToChallan}
+          onAddCustomPoLine={addCustomPoLineToChallan}
+          onAddRequirementToChallan={addRequirementToChallan}
+          onBookRequiredQtyFirst={() => {
+            setSelectedOrderForReq(selectedOrderForRec);
+            setActiveSubTab('requirements');
+          }}
+          rackSummaries={rackSummaries}
+          rackZoneByCode={rackZoneByCode}
+          defaultRackId={defaultRackId}
+          secondRackId={racks[1]?.id || defaultRackId}
+          fabricTypeSuggestions={FABRIC_TYPE_SUGGESTIONS}
+          recRegisterView={recRegisterView}
+          onRecRegisterViewChange={setRecRegisterView}
+          recLedgerSearch={recLedgerSearch}
+          onRecLedgerSearchChange={setRecLedgerSearch}
+          challanGroups={challanGroups}
+          filteredReceivingsLedger={filteredReceivingsLedger}
+          expandedChallans={expandedChallans}
+          onToggleExpandChallan={(groupKey) =>
+            setExpandedChallans((prev) => ({
+              ...prev,
+              [groupKey]: !(prev[groupKey] ?? true),
+            }))
+          }
+          onExportCsv={() =>
+            exportCsvFile(
+              `fabric_receiving_register_${todayISO()}.csv`,
+              ['Date', 'Challan', 'Supplier', 'Rack', 'Buyer', 'PO', 'Style', 'Ship Date', 'Fabric Type', 'Color', 'GSM', 'Lot', 'Required (kg)', 'Received (kg)', 'Delivered (kg)', 'Balance (kg)', 'Remark'],
+              filteredReceivingsLedger.map((r) => [
+                r.receiveDate,
+                r.challanNo,
+                r.supplier,
+                r.rackCode,
+                r.buyer,
+                r.po,
+                r.style || '',
+                r.shipDate || '',
+                r.fabricType,
+                r.color,
+                r.gsm || '',
+                r.lotNo,
+                (r.requiredQtyKg || 0).toFixed(2),
+                r.weightKg.toFixed(2),
+                r.deliveredKg.toFixed(2),
+                r.availableKg.toFixed(2),
+                r.remark || '',
+              ])
+            )
+          }
+          onDeliverBatch={(r) => {
+            selectBatchForDelivery(r, 'Partial');
+            setActiveSubTab('delivery');
+          }}
+          onDeleteReceivingRecord={handleDeleteReceivingRecord}
+        />
       )}
 
       {/* ======================================================================== */}
@@ -3258,6 +2074,7 @@ export default function FabricStoreTab({
           onSubmitDeliveryBatch={handleSubmitDeliveryBatch}
           onDeleteDeliveryRecord={handleDeleteDeliveryRecord}
           onShowToast={showToast}
+          rackZoneByCode={rackZoneByCode}
         />
       )}
 
@@ -3265,124 +2082,37 @@ export default function FabricStoreTab({
       {/* SUB-TAB 5: PO-WISE FABRIC BALANCE LEDGER                                 */}
       {/* ======================================================================== */}
       {activeSubTab === 'ledger' && (
-        <div className="bg-white rounded-2xl border border-slate-300 shadow-xs overflow-hidden">
-          <div className="p-4 md:p-5 border-b border-slate-300 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div>
-              <h3 className="text-base font-extrabold text-slate-900">PO-Wise Fabric Balance Ledger</h3>
-              <p className="text-xs text-slate-600 mt-0.5">
-                Aggregated required, received, delivered, and store balance per PO
-              </p>
-            </div>
-            <div className="flex items-center gap-2.5">
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={14} />
-                <input
-                  type="text"
-                  value={ledgerSearch}
-                  onChange={(e) => setLedgerSearch(e.target.value)}
-                  placeholder="Search PO, Buyer, Style..."
-                  className="pl-8 pr-3 py-1.5 bg-white border border-slate-300 rounded-xl text-[13px] outline-none focus:ring-2 focus:ring-blue-500"
-                />
-              </div>
-              {rolePerms?.canExport && (
-                <button
-                  onClick={() =>
-                    exportCsvFile(
-                      `po_fabric_balance_${todayISO()}.csv`,
-                      ['Buyer', 'PO', 'Style', 'Item', 'File No', 'Ship Date', 'Required (kg)', 'Received (kg)', 'Delivered (kg)', 'Balance (kg)', 'Racks'],
-                      filteredPoLedger.map((p) => [
-                        p.buyer,
-                        p.po,
-                        p.style,
-                        p.itemName,
-                        p.fileNo,
-                        p.shipDate,
-                        p.requiredKg.toFixed(2),
-                        p.receivedKg.toFixed(2),
-                        p.deliveredKg.toFixed(2),
-                        p.availableKg.toFixed(2),
-                        Array.from(p.racks).join(' | '),
-                      ])
-                    )
-                  }
-                  className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-xs font-bold text-slate-800 flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Download size={13} />
-                  <span>CSV</span>
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-[13px]">
-              <thead className="bg-slate-100 text-slate-800 uppercase text-xs font-extrabold">
-                <tr>
-                  <th className="p-3.5 border-b border-r border-slate-300">Buyer / PO</th>
-                  <th className="p-3.5 border-b border-r border-slate-300">Style / Item / File</th>
-                  <th className="p-3.5 border-b border-r border-slate-300">Ship Date</th>
-                  <th className="p-3.5 border-b border-r border-slate-300">Racks</th>
-                  <th className="p-3.5 border-b border-r border-slate-300 text-right">Required</th>
-                  <th className="p-3.5 border-b border-r border-slate-300 text-right">Received</th>
-                  <th className="p-3.5 border-b border-r border-slate-300 text-right">Delivered</th>
-                  <th className="p-3.5 border-b border-r border-slate-300 text-right">Store Balance</th>
-                  <th className="p-3.5 border-b border-slate-300 text-center">Action</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {filteredPoLedger.length === 0 ? (
-                  <tr>
-                    <td colSpan={9} className="p-8 text-center text-slate-500">
-                      No PO stock ledger entries yet.
-                    </td>
-                  </tr>
-                ) : (
-                  filteredPoLedger.map((p) => (
-                    <tr key={p.key} className="hover:bg-slate-50">
-                      <td className="p-3 border-r border-slate-200 whitespace-nowrap">
-                        <div className="font-mono font-extrabold text-slate-900">PO {p.po}</div>
-                        <div className="text-xs font-bold text-blue-800">{p.buyer}</div>
-                      </td>
-                      <td className="p-3 border-r border-slate-200">
-                        <div className="font-bold text-slate-900">{p.style}</div>
-                        <div className="text-xs text-slate-600">{p.itemName} {p.fileNo !== '-' ? `· File ${p.fileNo}` : ''}</div>
-                      </td>
-                      <td className="p-3 border-r border-slate-200 font-mono whitespace-nowrap">{p.shipDate}</td>
-                      <td className="p-3 border-r border-slate-200 font-mono font-bold text-slate-800">
-                        {p.racks.size > 0 ? Array.from(p.racks).join(', ') : '-'}
-                      </td>
-                      <td className="p-3 border-r border-slate-200 text-right font-mono tabular-nums font-bold text-slate-700 whitespace-nowrap">
-                        {p.requiredKg > 0 ? `${fmtKg(p.requiredKg)} kg` : '-'}
-                      </td>
-                      <td className="p-3 border-r border-slate-200 text-right font-mono tabular-nums font-bold text-slate-900 whitespace-nowrap">
-                        {fmtKg(p.receivedKg)} kg
-                      </td>
-                      <td className="p-3 border-r border-slate-200 text-right font-mono tabular-nums font-bold text-blue-700 whitespace-nowrap">
-                        {fmtKg(p.deliveredKg)} kg
-                      </td>
-                      <td className="p-3 border-r border-slate-200 text-right font-mono tabular-nums font-extrabold text-emerald-700 whitespace-nowrap">
-                        {fmtKg(p.availableKg)} kg
-                      </td>
-                      <td className="p-3 text-center whitespace-nowrap">
-                        {p.availableKg > 0.009 && rolePerms?.canDeliver && (
-                          <button
-                            onClick={() => {
-                              setDelPoSearch(p.po);
-                              setActiveSubTab('delivery');
-                            }}
-                            className="px-3 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer"
-                          >
-                            Deliver
-                          </button>
-                        )}
-                      </td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <PoBalanceSection
+          poLedgerList={poLedgerList}
+          ledgerSearch={ledgerSearch}
+          onLedgerSearchChange={setLedgerSearch}
+          rackZoneByCode={rackZoneByCode}
+          canDeliver={Boolean(rolePerms?.canDeliver)}
+          canExport={Boolean(rolePerms?.canExport)}
+          onExportCsv={(rows) =>
+            exportCsvFile(
+              `po_fabric_balance_${todayISO()}.csv`,
+              ['Buyer', 'PO', 'Style', 'Item', 'File No', 'Ship Date', 'Required (kg)', 'Received (kg)', 'Delivered (kg)', 'Balance (kg)', 'Racks'],
+              rows.map((p) => [
+                p.buyer,
+                p.po,
+                p.style,
+                p.itemName,
+                p.fileNo,
+                p.shipDate,
+                p.requiredKg.toFixed(2),
+                p.receivedKg.toFixed(2),
+                p.deliveredKg.toFixed(2),
+                p.availableKg.toFixed(2),
+                Array.from(p.racks).join(' | '),
+              ])
+            )
+          }
+          onDeliverPo={(po) => {
+            setDelPoSearch(po);
+            setActiveSubTab('delivery');
+          }}
+        />
       )}
 
       {/* ======================================================================== */}

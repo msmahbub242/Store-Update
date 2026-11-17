@@ -15,6 +15,7 @@ import {
   Warehouse,
 } from 'lucide-react';
 import { FabricDelivery, FabricReceiving } from '../../firebase';
+import { getZoneColorPalette } from './rackZoneTheme';
 
 export type EnrichedReceivingBatch = FabricReceiving & {
   deliveredKg: number;
@@ -59,6 +60,7 @@ interface MultiPoDeliverySectionProps {
   }) => Promise<boolean>;
   onDeleteDeliveryRecord: (del: FabricDelivery) => Promise<void>;
   onShowToast: (type: 'success' | 'error', text: string) => void;
+  rackZoneByCode?: Record<string, string>;
 }
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -102,6 +104,7 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
   onSubmitDeliveryBatch,
   onDeleteDeliveryRecord,
   onShowToast,
+  rackZoneByCode = {},
 }) => {
   const [delShowExhausted, setDelShowExhausted] = useState(false);
   const [pickerViewMode, setPickerViewMode] = useState<'by_po' | 'by_lot'>('by_po');
@@ -447,30 +450,86 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
     return Array.from(map.values());
   }, [filteredDeliveriesHistory]);
 
+  const kpi = useMemo(() => {
+    const totalIssuedKg = deliveries.reduce((s, d) => s + (Number(d.weightKg) || 0), 0);
+    const availableReadyKg = enrichedReceivings.reduce((s, r) => s + r.availableKg, 0);
+    const readyLotsCount = enrichedReceivings.filter((r) => r.availableKg > 0.009).length;
+    const allSlipsCount = new Set(
+      deliveries.map((d) => d.supplyGroupId || `${d.supplyNo}__${d.deliveryDate}__${d.issuedTo}`)
+    ).size;
+    return {
+      allSlipsCount,
+      totalIssuedKg,
+      availableReadyKg,
+      readyLotsCount,
+    };
+  }, [deliveries, enrichedReceivings]);
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
+      {/* Delivery Hero KPI Overview Strip */}
+      <div className="bg-slate-900 text-white rounded-2xl border border-slate-800 p-4 sm:p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-center">
+          <div className="lg:col-span-5 space-y-1.5">
+            <p className="text-xs font-semibold text-sky-300">
+              Multi-PO & Multi-Rack Fabric Delivery · {kpi.allSlipsCount} Supply Slip(s)
+            </p>
+            <div className="flex items-baseline gap-2.5 flex-wrap">
+              <span className="text-3xl sm:text-4xl font-extrabold font-mono tabular-nums tracking-tight">
+                {fmtKg(kpi.totalIssuedKg)}
+              </span>
+              <span className="text-sm font-semibold text-slate-300">kg total issued</span>
+            </div>
+            <p className="text-xs text-slate-400 font-mono tabular-nums">
+              {deliveries.length} Issued Line(s) · {kpi.readyLotsCount} Rack Lot(s) Ready for Issue
+            </p>
+          </div>
+
+          <div className="lg:col-span-7 grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div className="p-3.5 rounded-xl bg-slate-800/80 border border-slate-700">
+              <span className="text-xs font-semibold text-slate-400 block">
+                Stock Ready In Racks
+              </span>
+              <span className="text-xl font-extrabold font-mono tabular-nums text-emerald-400 mt-1 block">
+                {fmtKg(kpi.availableReadyKg)} kg
+              </span>
+            </div>
+            <div className="p-3.5 rounded-xl bg-slate-800/80 border border-slate-700">
+              <span className="text-xs font-semibold text-slate-400 block">Supply Slips</span>
+              <span className="text-xl font-extrabold font-mono tabular-nums text-white mt-1 block">
+                {kpi.allSlipsCount}
+              </span>
+            </div>
+            <div className="p-3.5 rounded-xl bg-slate-800/80 border border-slate-700">
+              <span className="text-xs font-semibold text-slate-400 block">Active Issue Queue</span>
+              <span className="text-xl font-extrabold font-mono tabular-nums text-sky-400 mt-1 block">
+                {queueTotals.lineCount} · {fmtKg(queueTotals.totalWeightKg)} kg
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {canDeliver ? (
         <form onSubmit={handleSubmitQueue} className="space-y-5">
           {/* Step 1: Shared Supply Dispatch Header */}
-          <div className="bg-white rounded-2xl border border-slate-300 shadow-xs p-5 space-y-4">
-            <div className="pb-3 border-b border-slate-300 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="bg-white rounded-2xl border border-slate-300 overflow-hidden">
+            <div className="bg-blue-800 text-white px-4 py-3.5 border-b border-blue-900 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
               <div>
-                <h3 className="text-base font-extrabold text-slate-900">
+                <h3 className="text-sm sm:text-base font-extrabold">
                   1. Supply Dispatch Header (Multi-PO & Multi-Rack Delivery)
                 </h3>
-                <p className="text-[13px] text-slate-600 mt-0.5">
+                <p className="text-xs text-blue-100 mt-0.5">
                   Select multiple POs and multiple racks for the same PO under a single Supply No
                 </p>
               </div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-xs font-mono font-extrabold text-slate-900 bg-slate-100 border border-slate-300 px-3 py-1.5 rounded-xl">
-                  {queueTotals.poCount} PO · {queueTotals.rackCount} Rack · {queueTotals.lineCount} Line ·{' '}
-                  <span className="text-blue-700">{fmtKg(queueTotals.totalWeightKg)} kg</span>
-                </span>
-              </div>
+              <span className="text-xs font-mono font-extrabold bg-blue-950/60 text-blue-100 px-3 py-1.5 rounded-xl shrink-0">
+                {queueTotals.poCount} PO · {queueTotals.rackCount} Rack · {queueTotals.lineCount} Line ·{' '}
+                <span className="text-white">{fmtKg(queueTotals.totalWeightKg)} kg</span>
+              </span>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
+            <div className="p-4 sm:p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3.5">
               <div>
                 <label className="block text-xs font-extrabold text-slate-800 mb-1.5">
                   Supply / Issue No *
@@ -482,14 +541,14 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                     value={supplyHeader.supplyNo}
                     onChange={(e) => setSupplyHeader((p) => ({ ...p, supplyNo: e.target.value }))}
                     placeholder="e.g. SUP-261117-001"
-                    className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] font-mono font-bold focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                    className="w-full min-h-[44px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] font-mono font-bold focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                   />
                   <button
                     type="button"
                     onClick={() =>
                       setSupplyHeader((p) => ({ ...p, supplyNo: suggestSupplyNo() }))
                     }
-                    className="px-2.5 py-2 rounded-xl border border-slate-300 bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-700 shrink-0 cursor-pointer"
+                    className="min-h-[44px] px-3 py-2 rounded-xl border border-slate-300 bg-slate-100 hover:bg-slate-200 text-xs font-bold text-slate-700 shrink-0 cursor-pointer"
                     title="Auto-generate Supply No"
                   >
                     Auto
@@ -508,7 +567,7 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                   onChange={(e) =>
                     setSupplyHeader((p) => ({ ...p, deliveryDate: e.target.value }))
                   }
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] font-mono focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  className="w-full min-h-[44px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] font-mono focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                 />
               </div>
 
@@ -523,7 +582,7 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                   value={supplyHeader.issuedTo}
                   onChange={(e) => setSupplyHeader((p) => ({ ...p, issuedTo: e.target.value }))}
                   placeholder="Cutting Floor / Line 05..."
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  className="w-full min-h-[44px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] font-semibold focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                 />
                 <datalist id="multi-issue-destination-options">
                   <option value="Cutting Floor" />
@@ -546,7 +605,7 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                     setSupplyHeader((p) => ({ ...p, receiverName: e.target.value }))
                   }
                   placeholder="Cutting supervisor"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  className="w-full min-h-[44px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                 />
               </div>
 
@@ -559,7 +618,7 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                   value={supplyHeader.remark}
                   onChange={(e) => setSupplyHeader((p) => ({ ...p, remark: e.target.value }))}
                   placeholder="Requisition / batch note"
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                  className="w-full min-h-[44px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                 />
               </div>
             </div>
@@ -568,25 +627,25 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
           {/* Step 2 & Step 3: Picker (Left) + Multi-PO/Multi-Rack Queue (Right) */}
           <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
             {/* Left: Stock Picker (Grouped by PO for Multi-Rack, or All Lots) */}
-            <div className="xl:col-span-5 bg-white rounded-2xl border border-slate-300 shadow-xs p-4 space-y-3.5">
-              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-300">
+            <div className="xl:col-span-5 bg-white rounded-2xl border border-slate-300 overflow-hidden">
+              <div className="bg-slate-800 text-white px-4 py-3.5 border-b border-slate-900 flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <h3 className="text-base font-extrabold text-slate-900">
+                  <h3 className="text-sm sm:text-base font-extrabold">
                     2. Select POs & Racks to Issue
                   </h3>
-                  <p className="text-xs text-slate-600">
+                  <p className="text-xs text-slate-300 mt-0.5">
                     Add multiple POs or all racks sharing one PO
                   </p>
                 </div>
 
-                <div className="flex items-center bg-slate-100 p-1 rounded-xl border border-slate-300">
+                <div className="flex items-center bg-slate-900 p-1 rounded-xl border border-slate-700">
                   <button
                     type="button"
                     onClick={() => setPickerViewMode('by_po')}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer ${
+                    className={`min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer whitespace-nowrap shrink-0 ${
                       pickerViewMode === 'by_po'
-                        ? 'bg-white text-slate-900 shadow-2xs'
-                        : 'text-slate-600'
+                        ? 'bg-white text-slate-900'
+                        : 'text-slate-300 hover:text-white'
                     }`}
                   >
                     By PO
@@ -594,10 +653,10 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                   <button
                     type="button"
                     onClick={() => setPickerViewMode('by_lot')}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer ${
+                    className={`min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-bold cursor-pointer whitespace-nowrap shrink-0 ${
                       pickerViewMode === 'by_lot'
-                        ? 'bg-white text-slate-900 shadow-2xs'
-                        : 'text-slate-600'
+                        ? 'bg-white text-slate-900'
+                        : 'text-slate-300 hover:text-white'
                     }`}
                   >
                     All Lots
@@ -605,236 +664,250 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                 </div>
               </div>
 
-              <div className="flex items-center gap-2">
-                <div className="relative flex-1">
-                  <Search
-                    className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                    size={15}
-                  />
-                  <input
-                    type="text"
-                    value={delPoSearch}
-                    onChange={(e) => setDelPoSearch(e.target.value)}
-                    placeholder="Search PO, Buyer, Rack, Lot, Color..."
-                    className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
-                  />
-                </div>
-                <label className="flex items-center gap-1.5 text-xs font-bold text-slate-700 cursor-pointer shrink-0">
-                  <input
-                    type="checkbox"
-                    checked={delShowExhausted}
-                    onChange={(e) => setDelShowExhausted(e.target.checked)}
-                    className="rounded border-slate-400"
-                  />
-                  <span>0 kg</span>
-                </label>
-              </div>
-
-              <div className="max-h-[540px] overflow-y-auto space-y-2.5 pr-1">
-                {deliveryCandidateBatches.length === 0 ? (
-                  <div className="p-8 rounded-xl border border-dashed border-slate-300 text-center text-[13px] text-slate-500">
-                    No available fabric lots match &quot;{delPoSearch}&quot;.
+              <div className="p-4 space-y-3.5">
+                <div className="flex items-center gap-2">
+                  <div className="relative flex-1">
+                    <Search
+                      className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                      size={15}
+                    />
+                    <input
+                      type="text"
+                      value={delPoSearch}
+                      onChange={(e) => setDelPoSearch(e.target.value)}
+                      placeholder="Search PO, Buyer, Rack, Lot, Color..."
+                      className="w-full min-h-[44px] pl-9 pr-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] font-medium focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                    />
                   </div>
-                ) : pickerViewMode === 'by_po' ? (
-                  groupedPoCandidates.map((poGroup) => {
-                    const activeBatches = poGroup.batches.filter((b) => b.availableKg > 0.009);
-                    return (
-                      <div
-                        key={poGroup.poKey}
-                        className="rounded-xl border border-slate-300 overflow-hidden bg-white"
-                      >
-                        <div className="px-3.5 py-2.5 bg-slate-100 border-b border-slate-300 flex flex-wrap items-center justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="font-mono font-extrabold text-sm text-slate-900">
-                                PO {poGroup.po}
-                              </span>
-                              <span className="text-xs font-extrabold text-blue-800">
-                                {poGroup.buyer}
-                              </span>
-                              <span className="text-xs font-mono font-bold text-emerald-800">
-                                ({fmtKg(poGroup.totalAvailableKg)} kg across {poGroup.racks.size} rack
-                                {poGroup.racks.size === 1 ? '' : 's'})
-                              </span>
-                            </div>
-                            <p className="text-xs text-slate-600 truncate mt-0.5">
-                              {poGroup.style} · {poGroup.itemName}
-                            </p>
-                          </div>
+                  <label className="min-h-[44px] px-2.5 flex items-center gap-1.5 text-xs font-bold text-slate-700 cursor-pointer shrink-0 border border-slate-200 rounded-xl bg-slate-50">
+                    <input
+                      type="checkbox"
+                      checked={delShowExhausted}
+                      onChange={(e) => setDelShowExhausted(e.target.checked)}
+                      className="rounded border-slate-400"
+                    />
+                    <span>0 kg</span>
+                  </label>
+                </div>
 
-                          {activeBatches.length > 0 && (
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => addAllRacksForPo(activeBatches, 'Partial')}
-                                className="px-2.5 py-1 rounded-lg border border-slate-400 bg-white hover:bg-slate-50 text-slate-800 text-xs font-extrabold cursor-pointer flex items-center gap-1"
-                                title="Stage all racks of this PO for Partial entry"
-                              >
-                                <Plus size={12} />
-                                <span>Add All Racks ({activeBatches.length})</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => addAllRacksForPo(activeBatches, 'Full')}
-                                className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-extrabold cursor-pointer"
-                                title="Stage all racks of this PO with Full balance"
-                              >
-                                Full All
-                              </button>
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="divide-y divide-slate-200">
-                          {poGroup.batches.map((batch) => {
-                            const isQueued = queuedBatchIds.has(batch.id);
-                            return (
-                              <div
-                                key={batch.id}
-                                className={`p-3 flex items-center justify-between gap-2 ${
-                                  isQueued ? 'bg-blue-50/70' : 'bg-white hover:bg-slate-50'
-                                }`}
-                              >
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-2 text-xs flex-wrap">
-                                    <span className="font-mono font-extrabold px-2 py-0.5 rounded bg-slate-900 text-white">
-                                      Rack {batch.rackCode}
-                                    </span>
-                                    <span className="font-bold text-slate-900">
-                                      {batch.fabricType} · {batch.color}
-                                    </span>
-                                    {isQueued && (
-                                      <span className="text-[11px] font-extrabold text-blue-700 flex items-center gap-0.5">
-                                        <CheckCircle2 size={12} /> Queued
-                                      </span>
-                                    )}
-                                  </div>
-                                  <p className="text-xs font-mono text-slate-600 mt-1">
-                                    Lot <strong>{batch.lotNo}</strong> · Ch {batch.challanNo} · Bal:{' '}
-                                    <strong className="text-emerald-700 text-[13px]">
-                                      {fmtKg(batch.availableKg)} kg
-                                    </strong>
-                                  </p>
-                                </div>
-
-                                {batch.availableKg > 0.009 ? (
-                                  <div className="flex items-center gap-1.5 shrink-0">
-                                    <button
-                                      type="button"
-                                      onClick={() => addBatchToQueue(batch, 'Partial')}
-                                      className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold cursor-pointer"
-                                    >
-                                      + Partial
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => addBatchToQueue(batch, 'Full')}
-                                      className="px-2.5 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold cursor-pointer"
-                                    >
-                                      + Full
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <span className="text-xs font-bold text-slate-400">Exhausted</span>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  })
-                ) : (
-                  <div className="divide-y divide-slate-200 border border-slate-300 rounded-xl overflow-hidden">
-                    {deliveryCandidateBatches.map((batch) => {
-                      const isQueued = queuedBatchIds.has(batch.id);
+                <div className="max-h-[540px] overflow-y-auto space-y-2.5 pr-1">
+                  {deliveryCandidateBatches.length === 0 ? (
+                    <div className="p-8 rounded-xl border border-dashed border-slate-300 text-center text-[13px] text-slate-500">
+                      No available fabric lots match &quot;{delPoSearch}&quot;.
+                    </div>
+                  ) : pickerViewMode === 'by_po' ? (
+                    groupedPoCandidates.map((poGroup) => {
+                      const activeBatches = poGroup.batches.filter((b) => b.availableKg > 0.009);
                       return (
                         <div
-                          key={batch.id}
-                          className={`p-3 flex items-start justify-between gap-2 ${
-                            isQueued ? 'bg-blue-50/70' : 'bg-white hover:bg-slate-50'
-                          }`}
+                          key={poGroup.poKey}
+                          className="rounded-xl border border-slate-300 overflow-hidden bg-white"
                         >
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2 text-xs flex-wrap">
-                              <span className="font-extrabold text-slate-900 font-mono text-[13px]">
-                                PO {batch.po}
-                              </span>
-                              <span className="font-bold text-blue-800">{batch.buyer}</span>
-                              <span className="font-mono font-extrabold px-1.5 py-0.5 rounded bg-slate-900 text-white">
-                                Rack {batch.rackCode}
-                              </span>
-                              {isQueued && (
-                                <span className="text-[11px] font-extrabold text-blue-700 flex items-center gap-0.5">
-                                  <CheckCircle2 size={12} /> Queued
+                          <div className="px-3.5 py-2.5 bg-slate-100 border-b border-slate-300 flex flex-wrap items-center justify-between gap-2">
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-mono font-extrabold text-sm text-slate-900">
+                                  PO {poGroup.po}
                                 </span>
-                              )}
+                                <span className="text-xs font-extrabold text-blue-800">
+                                  {poGroup.buyer}
+                                </span>
+                                <span className="text-xs font-mono font-bold text-emerald-800">
+                                  ({fmtKg(poGroup.totalAvailableKg)} kg across {poGroup.racks.size}{' '}
+                                  rack{poGroup.racks.size === 1 ? '' : 's'})
+                                </span>
+                              </div>
+                              <p className="text-xs text-slate-600 truncate mt-0.5">
+                                {poGroup.style} · {poGroup.itemName}
+                              </p>
                             </div>
-                            <p className="text-xs font-semibold text-slate-800 mt-1">
-                              {batch.fabricType} · {batch.color} {batch.gsm ? `· ${batch.gsm}` : ''}
-                            </p>
-                            <p className="text-xs text-slate-600 font-mono mt-0.5">
-                              Lot {batch.lotNo} · Bal:{' '}
-                              <strong className="text-emerald-700">
-                                {fmtKg(batch.availableKg)} kg
-                              </strong>
-                            </p>
+
+                            {activeBatches.length > 0 && (
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => addAllRacksForPo(activeBatches, 'Partial')}
+                                  className="min-h-[36px] px-2.5 py-1 rounded-lg border border-slate-400 bg-white hover:bg-slate-50 text-slate-800 text-xs font-extrabold cursor-pointer flex items-center gap-1 whitespace-nowrap"
+                                  title="Stage all racks of this PO for Partial entry"
+                                >
+                                  <Plus size={12} />
+                                  <span>Add All ({activeBatches.length})</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => addAllRacksForPo(activeBatches, 'Full')}
+                                  className="min-h-[36px] px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-extrabold cursor-pointer whitespace-nowrap"
+                                  title="Stage all racks of this PO with Full balance"
+                                >
+                                  Full All
+                                </button>
+                              </div>
+                            )}
                           </div>
 
-                          {batch.availableKg > 0.009 ? (
-                            <div className="flex items-center gap-1.5 shrink-0">
-                              <button
-                                type="button"
-                                onClick={() => addBatchToQueue(batch, 'Partial')}
-                                className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold cursor-pointer"
-                              >
-                                + Partial
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => addBatchToQueue(batch, 'Full')}
-                                className="px-2.5 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold cursor-pointer"
-                              >
-                                + Full
-                              </button>
-                            </div>
-                          ) : (
-                            <span className="text-xs font-bold text-slate-400">Exhausted</span>
-                          )}
+                          <div className="divide-y divide-slate-200">
+                            {poGroup.batches.map((batch) => {
+                              const isQueued = queuedBatchIds.has(batch.id);
+                              const palette = getZoneColorPalette(
+                                rackZoneByCode[batch.rackCode] || batch.rackCode
+                              );
+                              return (
+                                <div
+                                  key={batch.id}
+                                  className={`p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${
+                                    isQueued ? 'bg-blue-50/70' : 'bg-white hover:bg-slate-50'
+                                  }`}
+                                >
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-2 text-xs flex-wrap">
+                                      <span className="inline-flex items-center gap-1.5 font-mono font-extrabold px-2 py-0.5 rounded bg-slate-900 text-white">
+                                        <span className={`h-2 w-2 rounded-full ${palette.dotBg}`} />
+                                        Rack {batch.rackCode}
+                                      </span>
+                                      <span className="font-bold text-slate-900">
+                                        {batch.fabricType} · {batch.color}
+                                      </span>
+                                      {isQueued && (
+                                        <span className="text-[11px] font-extrabold text-blue-700 flex items-center gap-0.5">
+                                          <CheckCircle2 size={12} /> Queued
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-xs font-mono text-slate-600 mt-1">
+                                      Lot <strong>{batch.lotNo}</strong> · Ch {batch.challanNo} ·
+                                      Bal:{' '}
+                                      <strong className="text-emerald-700 text-[13px]">
+                                        {fmtKg(batch.availableKg)} kg
+                                      </strong>
+                                    </p>
+                                  </div>
+
+                                  {batch.availableKg > 0.009 ? (
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                      <button
+                                        type="button"
+                                        onClick={() => addBatchToQueue(batch, 'Partial')}
+                                        className="min-h-[38px] px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold cursor-pointer whitespace-nowrap"
+                                      >
+                                        + Partial
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => addBatchToQueue(batch, 'Full')}
+                                        className="min-h-[38px] px-3 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold cursor-pointer whitespace-nowrap"
+                                      >
+                                        + Full
+                                      </button>
+                                    </div>
+                                  ) : (
+                                    <span className="text-xs font-bold text-slate-400">
+                                      Exhausted
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                       );
-                    })}
-                  </div>
-                )}
+                    })
+                  ) : (
+                    <div className="divide-y divide-slate-200 border border-slate-300 rounded-xl overflow-hidden">
+                      {deliveryCandidateBatches.map((batch) => {
+                        const isQueued = queuedBatchIds.has(batch.id);
+                        const palette = getZoneColorPalette(
+                          rackZoneByCode[batch.rackCode] || batch.rackCode
+                        );
+                        return (
+                          <div
+                            key={batch.id}
+                            className={`p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 ${
+                              isQueued ? 'bg-blue-50/70' : 'bg-white hover:bg-slate-50'
+                            }`}
+                          >
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 text-xs flex-wrap">
+                                <span className="font-extrabold text-slate-900 font-mono text-[13px]">
+                                  PO {batch.po}
+                                </span>
+                                <span className="font-bold text-blue-800">{batch.buyer}</span>
+                                <span className="inline-flex items-center gap-1.5 font-mono font-extrabold px-2 py-0.5 rounded bg-slate-900 text-white">
+                                  <span className={`h-2 w-2 rounded-full ${palette.dotBg}`} />
+                                  Rack {batch.rackCode}
+                                </span>
+                                {isQueued && (
+                                  <span className="text-[11px] font-extrabold text-blue-700 flex items-center gap-0.5">
+                                    <CheckCircle2 size={12} /> Queued
+                                  </span>
+                                )}
+                              </div>
+                              <p className="text-xs font-semibold text-slate-800 mt-1">
+                                {batch.fabricType} · {batch.color}{' '}
+                                {batch.gsm ? `· ${batch.gsm}` : ''}
+                              </p>
+                              <p className="text-xs text-slate-600 font-mono mt-0.5">
+                                Lot {batch.lotNo} · Bal:{' '}
+                                <strong className="text-emerald-700">
+                                  {fmtKg(batch.availableKg)} kg
+                                </strong>
+                              </p>
+                            </div>
+
+                            {batch.availableKg > 0.009 ? (
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => addBatchToQueue(batch, 'Partial')}
+                                  className="min-h-[38px] px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold cursor-pointer whitespace-nowrap"
+                                >
+                                  + Partial
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => addBatchToQueue(batch, 'Full')}
+                                  className="min-h-[38px] px-3 py-1.5 rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-xs font-bold cursor-pointer whitespace-nowrap"
+                                >
+                                  + Full
+                                </button>
+                              </div>
+                            ) : (
+                              <span className="text-xs font-bold text-slate-400">Exhausted</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
             {/* Right: Active Multi-PO & Multi-Rack Delivery Queue */}
-            <div className="xl:col-span-7 bg-white rounded-2xl border border-slate-300 shadow-xs overflow-hidden">
-              <div className="p-4 md:p-5 border-b border-slate-300 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="xl:col-span-7 bg-white rounded-2xl border border-slate-300 overflow-hidden">
+              <div className="bg-indigo-800 text-white px-4 py-3.5 border-b border-indigo-900 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-base font-extrabold text-slate-900">
+                  <h3 className="text-sm sm:text-base font-extrabold">
                     3. Active Supply Queue ({deliveryQueue.length} Item
                     {deliveryQueue.length === 1 ? '' : 's'})
                   </h3>
-                  <p className="text-xs text-slate-600 mt-0.5">
+                  <p className="text-xs text-indigo-100 mt-0.5">
                     Adjust Partial or Full weight per PO & Rack row, then issue together
                   </p>
                 </div>
 
                 {deliveryQueue.length > 0 && (
-                  <div className="flex items-center gap-2 shrink-0">
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
                     <button
                       type="button"
                       onClick={() => setDeliveryQueue([])}
-                      className="px-3 py-2 rounded-xl border border-slate-300 bg-white hover:bg-rose-50 hover:text-rose-700 text-xs font-bold text-slate-700 cursor-pointer"
+                      className="min-h-[42px] px-3.5 py-2 rounded-xl border border-indigo-400/50 bg-indigo-900/50 hover:bg-rose-600 text-white text-xs font-bold cursor-pointer whitespace-nowrap"
                     >
                       Clear Queue
                     </button>
                     <button
                       type="submit"
                       disabled={isSubmitting}
-                      className="px-5 py-2.5 bg-blue-700 hover:bg-blue-800 text-white text-xs font-extrabold rounded-xl transition cursor-pointer disabled:opacity-50 flex items-center gap-2 shadow-xs"
+                      className="min-h-[42px] px-5 py-2 bg-white hover:bg-indigo-50 text-indigo-950 text-xs font-extrabold rounded-xl transition cursor-pointer disabled:opacity-50 flex items-center gap-2 whitespace-nowrap"
                     >
                       <Truck size={15} />
                       <span>
@@ -853,7 +926,7 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                   <p className="text-sm font-bold text-slate-700">Supply queue is empty</p>
                   <p className="text-xs text-slate-500 max-w-md mx-auto">
                     Select one or more POs on the left. For a PO stored across shared racks, click{' '}
-                    <strong>Add All Racks</strong> or select individual rack lots.
+                    <strong>Add All</strong> or select individual rack lots.
                   </p>
                 </div>
               ) : (
@@ -861,6 +934,9 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                   {deliveryQueue.map((line, idx) => {
                     const batch = batchById.get(line.batchId);
                     if (!batch) return null;
+                    const palette = getZoneColorPalette(
+                      rackZoneByCode[batch.rackCode] || batch.rackCode
+                    );
                     const enteredWeight = parseFloat(line.weightKg);
                     const remainingAfter = Number.isFinite(enteredWeight)
                       ? Math.max(0, batch.availableKg - enteredWeight)
@@ -879,7 +955,8 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                               PO {batch.po}
                             </span>
                             <span className="font-extrabold text-blue-800">{batch.buyer}</span>
-                            <span className="font-mono font-extrabold px-2 py-0.5 rounded bg-indigo-50 text-indigo-900 border border-indigo-300">
+                            <span className="inline-flex items-center gap-1.5 font-mono font-extrabold px-2 py-0.5 rounded bg-slate-100 text-slate-900 border border-slate-300">
+                              <span className={`h-2 w-2 rounded-full ${palette.dotBg}`} />
                               Rack {batch.rackCode}
                             </span>
                             <span className="font-mono text-slate-600">
@@ -894,7 +971,7 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                                 onClick={() =>
                                   updateQueueLine(line.localId, { mode: 'Partial' })
                                 }
-                                className={`px-2.5 py-1 rounded-md cursor-pointer ${
+                                className={`min-h-[34px] px-2.5 py-1 rounded-md cursor-pointer ${
                                   line.mode === 'Partial'
                                     ? 'bg-white text-amber-800 shadow-2xs'
                                     : 'text-slate-600'
@@ -914,7 +991,7 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                                         : line.rollCount,
                                   })
                                 }
-                                className={`px-2.5 py-1 rounded-md cursor-pointer ${
+                                className={`min-h-[34px] px-2.5 py-1 rounded-md cursor-pointer whitespace-nowrap ${
                                   line.mode === 'Full'
                                     ? 'bg-emerald-700 text-white shadow-2xs'
                                     : 'text-slate-600'
@@ -931,7 +1008,7 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                                   prev.filter((q) => q.localId !== line.localId)
                                 )
                               }
-                              className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 cursor-pointer"
+                              className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-rose-600 hover:bg-rose-50 cursor-pointer"
                               title="Remove from supply queue"
                             >
                               <X size={16} />
@@ -940,12 +1017,12 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                         </div>
 
                         <div className="grid grid-cols-1 sm:grid-cols-12 gap-3 items-end text-xs">
-                          <div className="sm:col-span-5 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+                          <div className="sm:col-span-5 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5">
                             <div className="font-bold text-slate-900">
                               {batch.fabricType} · {batch.color} {batch.gsm ? `(${batch.gsm})` : ''}
                             </div>
                             <div className="font-mono text-slate-600 mt-0.5">
-                              Style: {batch.style || '-'} · Available:{' '}
+                              Style: {batch.style || '-'} · Avail:{' '}
                               <strong className="text-emerald-700">
                                 {fmtKg(batch.availableKg)} kg
                               </strong>
@@ -976,7 +1053,7 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                                 });
                               }}
                               placeholder={`Max ${fmtKg(batch.availableKg)}`}
-                              className={`w-full px-3 py-2 border rounded-xl text-[13px] font-mono font-extrabold outline-none ${
+                              className={`w-full min-h-[42px] px-3 py-2 border rounded-xl text-[13px] font-mono font-extrabold outline-none ${
                                 exceeds
                                   ? 'bg-rose-50 border-rose-500 text-rose-800'
                                   : 'bg-slate-50 border-slate-300 focus:bg-white focus:ring-2 focus:ring-blue-500'
@@ -1002,7 +1079,7 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                                 updateQueueLine(line.localId, { rollCount: e.target.value })
                               }
                               placeholder="0"
-                              className="w-full px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] font-mono focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
+                              className="w-full min-h-[42px] px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-[13px] font-mono focus:bg-white focus:ring-2 focus:ring-blue-500 outline-none"
                             />
                           </div>
                         </div>
@@ -1021,8 +1098,8 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
       )}
 
       {/* Delivery / Supply Register */}
-      <div className="bg-white rounded-2xl border border-slate-300 shadow-xs overflow-hidden">
-        <div className="p-4 md:p-5 border-b border-slate-300 bg-slate-50 flex flex-col md:flex-row md:items-center justify-between gap-3">
+      <div className="bg-white rounded-2xl border border-slate-300 overflow-hidden">
+        <div className="p-4 sm:p-5 border-b border-slate-300 bg-slate-50 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div>
             <h3 className="text-base font-extrabold text-slate-900">
               Fabric Delivery / Supply Register
@@ -1033,98 +1110,100 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
             </p>
           </div>
 
-          <div className="flex items-center gap-2.5 flex-wrap">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 flex-wrap">
             <div className="flex items-center bg-white p-1 rounded-xl border border-slate-300">
               <button
                 type="button"
                 onClick={() => setRegisterView('slip')}
-                className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer flex items-center gap-1 ${
+                className={`min-h-[36px] px-3 py-1 rounded-lg text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                   registerView === 'slip'
                     ? 'bg-slate-900 text-white'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                <Layers size={12} />
+                <Layers size={13} />
                 <span>By Supply Slip</span>
               </button>
               <button
                 type="button"
                 onClick={() => setRegisterView('lines')}
-                className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer flex items-center gap-1 ${
+                className={`min-h-[36px] px-3 py-1 rounded-lg text-xs font-bold cursor-pointer flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
                   registerView === 'lines'
                     ? 'bg-slate-900 text-white'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                <TableIcon size={12} />
+                <TableIcon size={13} />
                 <span>All Issued Lots</span>
               </button>
             </div>
 
-            <div className="relative">
-              <Search
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                size={14}
-              />
-              <input
-                type="text"
-                value={delHistorySearch}
-                onChange={(e) => setDelHistorySearch(e.target.value)}
-                placeholder="Search Supply No, PO, Rack..."
-                className="pl-8 pr-3 py-1.5 bg-white border border-slate-300 rounded-xl text-[13px] outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
+            <div className="flex items-center gap-2">
+              <div className="relative flex-1 sm:w-56">
+                <Search
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
+                  size={15}
+                />
+                <input
+                  type="text"
+                  value={delHistorySearch}
+                  onChange={(e) => setDelHistorySearch(e.target.value)}
+                  placeholder="Search Supply No, PO, Rack..."
+                  className="w-full min-h-[42px] pl-9 pr-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs sm:text-[13px] outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
 
-            {canExportData && (
-              <button
-                type="button"
-                onClick={() =>
-                  exportCsvFile(
-                    `fabric_delivery_register_${todayISO()}.csv`,
-                    [
-                      'Supply No',
-                      'Date',
-                      'Type',
-                      'Buyer',
-                      'PO',
-                      'Style',
-                      'Rack',
-                      'Fabric',
-                      'Color',
-                      'Lot',
-                      'Weight (kg)',
-                      'Rolls',
-                      'Issued To',
-                      'Receiver',
-                      'Issued By',
-                      'Remark',
-                    ],
-                    filteredDeliveriesHistory.map((d) => [
-                      d.supplyNo,
-                      d.deliveryDate,
-                      d.deliveryType,
-                      d.buyer,
-                      d.po,
-                      d.style || '',
-                      d.rackCode || '',
-                      d.fabricType || '',
-                      d.color || '',
-                      d.lotNo || '',
-                      d.weightKg.toFixed(2),
-                      d.rollCount || 0,
-                      d.issuedTo,
-                      d.receiverName || '',
-                      d.createdBy,
-                      d.remark || '',
-                    ])
-                  )
-                }
-                className="px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-xs font-bold text-slate-800 flex items-center gap-1.5 cursor-pointer"
-              >
-                <Download size={13} />
-                <span>CSV</span>
-              </button>
-            )}
+              {canExportData && (
+                <button
+                  type="button"
+                  onClick={() =>
+                    exportCsvFile(
+                      `fabric_delivery_register_${todayISO()}.csv`,
+                      [
+                        'Supply No',
+                        'Date',
+                        'Type',
+                        'Buyer',
+                        'PO',
+                        'Style',
+                        'Rack',
+                        'Fabric',
+                        'Color',
+                        'Lot',
+                        'Weight (kg)',
+                        'Rolls',
+                        'Issued To',
+                        'Receiver',
+                        'Issued By',
+                        'Remark',
+                      ],
+                      filteredDeliveriesHistory.map((d) => [
+                        d.supplyNo,
+                        d.deliveryDate,
+                        d.deliveryType,
+                        d.buyer,
+                        d.po,
+                        d.style || '',
+                        d.rackCode || '',
+                        d.fabricType || '',
+                        d.color || '',
+                        d.lotNo || '',
+                        d.weightKg.toFixed(2),
+                        d.rollCount || 0,
+                        d.issuedTo,
+                        d.receiverName || '',
+                        d.createdBy,
+                        d.remark || '',
+                      ])
+                    )
+                  }
+                  className="min-h-[42px] px-3.5 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-xs font-bold text-slate-800 flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                >
+                  <Download size={14} />
+                  <span>CSV</span>
+                </button>
+              )}
+            </div>
           </div>
         </div>
 
@@ -1166,14 +1245,14 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                         </span>
                       </button>
 
-                      <div className="flex items-center gap-3 shrink-0">
+                      <div className="flex items-center gap-2.5 shrink-0 flex-wrap">
                         <span className="font-mono tabular-nums text-sm font-extrabold text-blue-800">
                           {fmtKg(grp.totalWeightKg)} kg
                         </span>
                         <button
                           type="button"
                           onClick={() => setPrintSlipItems(grp.items)}
-                          className="px-3 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-900 hover:text-white text-slate-800 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition"
+                          className="min-h-[38px] px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-900 hover:text-white text-slate-800 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition whitespace-nowrap"
                         >
                           <Printer size={13} />
                           <span>Print Supply Slip</span>
@@ -1186,7 +1265,7 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                               [grp.groupKey]: !isExpanded,
                             }))
                           }
-                          className="p-1.5 rounded-lg border border-slate-300 bg-white text-slate-700 cursor-pointer"
+                          className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-xl border border-slate-300 bg-white text-slate-700 cursor-pointer"
                         >
                           {isExpanded ? <ChevronUp size={15} /> : <ChevronDown size={15} />}
                         </button>
@@ -1194,81 +1273,159 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
                     </div>
 
                     {isExpanded && (
-                      <div className="overflow-x-auto border-t border-slate-200">
-                        <table className="w-full text-left border-collapse text-[13px]">
-                          <thead className="bg-slate-100 text-slate-700 uppercase text-xs font-extrabold">
-                            <tr>
-                              <th className="p-2.5 border-b border-r border-slate-300">Rack</th>
-                              <th className="p-2.5 border-b border-r border-slate-300">
-                                Buyer / PO / Style
-                              </th>
-                              <th className="p-2.5 border-b border-r border-slate-300">
-                                Fabric / Color / Lot
-                              </th>
-                              <th className="p-2.5 border-b border-r border-slate-300">Type</th>
-                              <th className="p-2.5 border-b border-r border-slate-300 text-right">
-                                Delivered
-                              </th>
-                              {canDeleteRecords && (
-                                <th className="p-2.5 border-b border-slate-300 text-center">Del</th>
-                              )}
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-200">
-                            {grp.items.map((item) => (
-                              <tr key={item.id} className="hover:bg-slate-50">
-                                <td className="p-2.5 border-r border-slate-200 font-mono font-extrabold text-slate-900">
-                                  Rack {item.rackCode || '-'}
-                                </td>
-                                <td className="p-2.5 border-r border-slate-200">
-                                  <span className="font-mono font-extrabold text-slate-900">
-                                    PO {item.po}
-                                  </span>
-                                  <span className="text-slate-400 mx-1.5">·</span>
-                                  <span className="font-bold text-blue-800">{item.buyer}</span>
-                                  {item.style && (
-                                    <div className="text-xs text-slate-600">{item.style}</div>
-                                  )}
-                                </td>
-                                <td className="p-2.5 border-r border-slate-200">
-                                  <span className="font-bold text-slate-900">
-                                    {item.fabricType || '-'} · {item.color || '-'}
-                                  </span>
-                                  <div className="text-xs font-mono text-slate-600">
-                                    Lot {item.lotNo || '-'}
+                      <>
+                        {/* Mobile Cards inside Supply Slip */}
+                        <div className="md:hidden divide-y divide-slate-200 border-t border-slate-200">
+                          {grp.items.map((item) => {
+                            const palette = getZoneColorPalette(
+                              rackZoneByCode[item.rackCode || ''] || item.rackCode || ''
+                            );
+                            return (
+                              <div key={item.id} className="p-4 space-y-2 bg-white">
+                                <div className="flex items-start justify-between gap-2">
+                                  <div>
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                      <span className="inline-flex items-center gap-1.5 font-mono text-xs font-extrabold text-slate-900">
+                                        <span className={`h-2 w-2 rounded-full ${palette.dotBg}`} />
+                                        Rack {item.rackCode || '-'}
+                                      </span>
+                                      <span className="text-slate-400">·</span>
+                                      <span className="font-mono font-extrabold text-sm text-slate-900">
+                                        PO {item.po}
+                                      </span>
+                                    </div>
+                                    <p className="text-xs font-bold text-blue-800 mt-0.5">
+                                      {item.buyer} {item.style ? `· ${item.style}` : ''}
+                                    </p>
                                   </div>
-                                </td>
-                                <td className="p-2.5 border-r border-slate-200">
-                                  <span
-                                    className={`text-xs font-extrabold ${
-                                      item.deliveryType === 'Full'
-                                        ? 'text-emerald-700'
-                                        : 'text-amber-700'
-                                    }`}
-                                  >
-                                    {item.deliveryType}
-                                  </span>
-                                </td>
-                                <td className="p-2.5 border-r border-slate-200 text-right font-mono tabular-nums font-extrabold text-blue-800 whitespace-nowrap">
-                                  {fmtKg(item.weightKg)} kg
-                                </td>
-                                {canDeleteRecords && (
-                                  <td className="p-2.5 text-center">
+
+                                  <div className="text-right shrink-0">
+                                    <span className="font-mono tabular-nums text-sm font-extrabold text-blue-800 block">
+                                      {fmtKg(item.weightKg)} kg
+                                    </span>
+                                    <span
+                                      className={`text-[11px] font-extrabold ${
+                                        item.deliveryType === 'Full'
+                                          ? 'text-emerald-700'
+                                          : 'text-amber-700'
+                                      }`}
+                                    >
+                                      {item.deliveryType}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="flex items-center justify-between gap-2 text-xs text-slate-700">
+                                  <div>
+                                    <span className="font-bold text-slate-900">
+                                      {item.fabricType || '-'} · {item.color || '-'}
+                                    </span>
+                                    <div className="font-mono text-slate-500">
+                                      Lot {item.lotNo || '-'}
+                                    </div>
+                                  </div>
+
+                                  {canDeleteRecords && (
                                     <button
                                       type="button"
                                       onClick={() => onDeleteDeliveryRecord(item)}
-                                      className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 cursor-pointer"
+                                      className="min-h-[38px] min-w-[38px] flex items-center justify-center rounded-xl border border-slate-200 text-rose-600 hover:bg-rose-50 cursor-pointer"
                                       title="Delete delivery line & restore stock"
                                     >
                                       <Trash2 size={14} />
                                     </button>
-                                  </td>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* Desktop Table inside Supply Slip */}
+                        <div className="hidden md:block overflow-x-auto border-t border-slate-200">
+                          <table className="w-full text-left border-collapse text-[13px]">
+                            <thead className="bg-slate-100 text-slate-700 uppercase text-xs font-extrabold">
+                              <tr>
+                                <th className="p-3 border-b border-r border-slate-300">Rack</th>
+                                <th className="p-3 border-b border-r border-slate-300">
+                                  Buyer / PO / Style
+                                </th>
+                                <th className="p-3 border-b border-r border-slate-300">
+                                  Fabric / Color / Lot
+                                </th>
+                                <th className="p-3 border-b border-r border-slate-300">Type</th>
+                                <th className="p-3 border-b border-r border-slate-300 text-right">
+                                  Delivered
+                                </th>
+                                {canDeleteRecords && (
+                                  <th className="p-3 border-b border-slate-300 text-center">Del</th>
                                 )}
                               </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
+                            </thead>
+                            <tbody className="divide-y divide-slate-200">
+                              {grp.items.map((item) => {
+                                const palette = getZoneColorPalette(
+                                  rackZoneByCode[item.rackCode || ''] || item.rackCode || ''
+                                );
+                                return (
+                                  <tr key={item.id} className="hover:bg-slate-50">
+                                    <td className="p-3 border-r border-slate-200 font-mono font-extrabold text-slate-900 whitespace-nowrap">
+                                      <span className="inline-flex items-center gap-1.5">
+                                        <span className={`h-2 w-2 rounded-full ${palette.dotBg}`} />
+                                        Rack {item.rackCode || '-'}
+                                      </span>
+                                    </td>
+                                    <td className="p-3 border-r border-slate-200">
+                                      <span className="font-mono font-extrabold text-slate-900">
+                                        PO {item.po}
+                                      </span>
+                                      <span className="text-slate-400 mx-1.5">·</span>
+                                      <span className="font-bold text-blue-800">{item.buyer}</span>
+                                      {item.style && (
+                                        <div className="text-xs text-slate-600">{item.style}</div>
+                                      )}
+                                    </td>
+                                    <td className="p-3 border-r border-slate-200">
+                                      <span className="font-bold text-slate-900">
+                                        {item.fabricType || '-'} · {item.color || '-'}
+                                      </span>
+                                      <div className="text-xs font-mono text-slate-600">
+                                        Lot {item.lotNo || '-'}
+                                      </div>
+                                    </td>
+                                    <td className="p-3 border-r border-slate-200">
+                                      <span
+                                        className={`text-xs font-extrabold ${
+                                          item.deliveryType === 'Full'
+                                            ? 'text-emerald-700'
+                                            : 'text-amber-700'
+                                        }`}
+                                      >
+                                        {item.deliveryType}
+                                      </span>
+                                    </td>
+                                    <td className="p-3 border-r border-slate-200 text-right font-mono tabular-nums font-extrabold text-blue-800 whitespace-nowrap">
+                                      {fmtKg(item.weightKg)} kg
+                                    </td>
+                                    {canDeleteRecords && (
+                                      <td className="p-3 text-center">
+                                        <button
+                                          type="button"
+                                          onClick={() => onDeleteDeliveryRecord(item)}
+                                          className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 cursor-pointer"
+                                          title="Delete delivery line & restore stock"
+                                        >
+                                          <Trash2 size={14} />
+                                        </button>
+                                      </td>
+                                    )}
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </>
                     )}
                   </div>
                 );
@@ -1276,102 +1433,200 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
             )}
           </div>
         ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse text-[13px]">
-              <thead className="bg-slate-100 text-slate-800 uppercase text-xs font-extrabold">
-                <tr>
-                  <th className="p-3 border-b border-r border-slate-300">Supply No / Date</th>
-                  <th className="p-3 border-b border-r border-slate-300">Type</th>
-                  <th className="p-3 border-b border-r border-slate-300">Buyer / PO / Style</th>
-                  <th className="p-3 border-b border-r border-slate-300">
-                    Rack / Fabric / Color / Lot
-                  </th>
-                  <th className="p-3 border-b border-r border-slate-300">Issued To</th>
-                  <th className="p-3 border-b border-r border-slate-300 text-right">Delivered</th>
-                  <th className="p-3 border-b border-slate-300 text-center">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-200">
-                {filteredDeliveriesHistory.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="p-8 text-center text-slate-500">
-                      No fabric delivery records yet.
-                    </td>
-                  </tr>
-                ) : (
-                  filteredDeliveriesHistory.map((d) => (
-                    <tr key={d.id} className="hover:bg-slate-50">
-                      <td className="p-3 border-r border-slate-200 font-mono whitespace-nowrap">
-                        <div className="font-extrabold text-slate-900">{d.supplyNo}</div>
-                        <div className="text-xs text-slate-500">{d.deliveryDate}</div>
-                      </td>
-                      <td className="p-3 border-r border-slate-200 whitespace-nowrap">
-                        <span
-                          className={`font-extrabold ${
-                            d.deliveryType === 'Full' ? 'text-emerald-700' : 'text-amber-700'
-                          }`}
+          <>
+            {/* Mobile Cards for All Issued Lots */}
+            <div className="md:hidden divide-y divide-slate-200">
+              {filteredDeliveriesHistory.length === 0 ? (
+                <div className="p-8 text-center text-[13px] text-slate-500">
+                  No fabric delivery records yet.
+                </div>
+              ) : (
+                filteredDeliveriesHistory.map((d) => {
+                  const palette = getZoneColorPalette(
+                    rackZoneByCode[d.rackCode || ''] || d.rackCode || ''
+                  );
+                  return (
+                    <div key={d.id} className="p-4 space-y-2.5 bg-white">
+                      <div className="flex items-start justify-between gap-2">
+                        <div>
+                          <div className="font-mono font-extrabold text-sm text-slate-900">
+                            {d.supplyNo} · PO {d.po}
+                          </div>
+                          <div className="text-xs text-slate-600 mt-0.5">
+                            <span className="font-bold text-blue-800">{d.buyer}</span> ·{' '}
+                            {d.style || '-'} · <span className="font-mono">{d.deliveryDate}</span>
+                          </div>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <span className="font-mono tabular-nums text-sm font-extrabold text-blue-800 block">
+                            {fmtKg(d.weightKg)} kg
+                          </span>
+                          <span
+                            className={`text-[11px] font-extrabold ${
+                              d.deliveryType === 'Full' ? 'text-emerald-700' : 'text-amber-700'
+                            }`}
+                          >
+                            {d.deliveryType}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="text-xs text-slate-700 space-y-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="inline-flex items-center gap-1.5 font-mono font-bold text-slate-900">
+                            <span className={`h-2 w-2 rounded-full ${palette.dotBg}`} />
+                            Rack {d.rackCode || '-'}
+                          </span>
+                          <span>·</span>
+                          <span className="font-bold">
+                            {d.fabricType || '-'} · {d.color || '-'}
+                          </span>
+                        </div>
+                        <div className="text-slate-500">
+                          Lot <span className="font-mono">{d.lotNo || '-'}</span> · To:{' '}
+                          <strong className="text-slate-800">{d.issuedTo}</strong>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setPrintSlipItems([d])}
+                          className="flex-1 min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer"
                         >
-                          {d.deliveryType}
-                        </span>
-                      </td>
-                      <td className="p-3 border-r border-slate-200">
-                        <div className="font-extrabold text-slate-900 font-mono">PO {d.po}</div>
-                        <div className="text-xs text-slate-700">
-                          {d.buyer} · {d.style || '-'}
-                        </div>
-                      </td>
-                      <td className="p-3 border-r border-slate-200">
-                        <div className="font-bold text-slate-900">
-                          Rack {d.rackCode || '-'} · {d.fabricType || '-'} · {d.color || '-'}
-                        </div>
-                        <div className="text-xs text-slate-500 font-mono">
-                          Lot {d.lotNo || '-'}
-                        </div>
-                      </td>
-                      <td className="p-3 border-r border-slate-200">
-                        <div className="font-bold text-slate-900">{d.issuedTo}</div>
-                        {d.receiverName && (
-                          <div className="text-xs text-slate-500">Recv: {d.receiverName}</div>
-                        )}
-                      </td>
-                      <td className="p-3 border-r border-slate-200 text-right font-mono tabular-nums font-extrabold text-blue-800 whitespace-nowrap">
-                        {fmtKg(d.weightKg)} kg
-                      </td>
-                      <td className="p-3 text-center whitespace-nowrap">
-                        <div className="flex items-center justify-center gap-1.5">
+                          <Printer size={13} />
+                          <span>Print Slip</span>
+                        </button>
+                        {canDeleteRecords && (
                           <button
                             type="button"
-                            onClick={() => setPrintSlipItems([d])}
-                            className="px-2.5 py-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold flex items-center gap-1 cursor-pointer"
+                            onClick={() => onDeleteDeliveryRecord(d)}
+                            className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-xl border border-slate-200 text-rose-600 hover:bg-rose-50 cursor-pointer"
+                            title="Delete delivery & restore stock"
                           >
-                            <Printer size={12} />
-                            <span>Slip</span>
+                            <Trash2 size={14} />
                           </button>
-                          {canDeleteRecords && (
-                            <button
-                              type="button"
-                              onClick={() => onDeleteDeliveryRecord(d)}
-                              className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 cursor-pointer"
-                              title="Delete delivery & restore stock"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          )}
-                        </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Desktop Table for All Issued Lots */}
+            <div className="hidden md:block overflow-x-auto">
+              <table className="w-full text-left border-collapse text-[13px]">
+                <thead className="bg-slate-100 text-slate-800 uppercase text-xs font-extrabold">
+                  <tr>
+                    <th className="p-3 border-b border-r border-slate-300">Supply No / Date</th>
+                    <th className="p-3 border-b border-r border-slate-300">Type</th>
+                    <th className="p-3 border-b border-r border-slate-300">Buyer / PO / Style</th>
+                    <th className="p-3 border-b border-r border-slate-300">
+                      Rack / Fabric / Color / Lot
+                    </th>
+                    <th className="p-3 border-b border-r border-slate-300">Issued To</th>
+                    <th className="p-3 border-b border-r border-slate-300 text-right">Delivered</th>
+                    <th className="p-3 border-b border-slate-300 text-center">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-200">
+                  {filteredDeliveriesHistory.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="p-8 text-center text-slate-500">
+                        No fabric delivery records yet.
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+                  ) : (
+                    filteredDeliveriesHistory.map((d) => {
+                      const palette = getZoneColorPalette(
+                        rackZoneByCode[d.rackCode || ''] || d.rackCode || ''
+                      );
+                      return (
+                        <tr key={d.id} className="hover:bg-slate-50">
+                          <td className="p-3 border-r border-slate-200 font-mono whitespace-nowrap">
+                            <div className="font-extrabold text-slate-900">{d.supplyNo}</div>
+                            <div className="text-xs text-slate-500">{d.deliveryDate}</div>
+                          </td>
+                          <td className="p-3 border-r border-slate-200 whitespace-nowrap">
+                            <span
+                              className={`font-extrabold ${
+                                d.deliveryType === 'Full' ? 'text-emerald-700' : 'text-amber-700'
+                              }`}
+                            >
+                              {d.deliveryType}
+                            </span>
+                          </td>
+                          <td className="p-3 border-r border-slate-200">
+                            <div className="font-extrabold text-slate-900 font-mono">PO {d.po}</div>
+                            <div className="text-xs text-slate-700">
+                              {d.buyer} · {d.style || '-'}
+                            </div>
+                          </td>
+                          <td className="p-3 border-r border-slate-200">
+                            <div className="font-bold text-slate-900 flex items-center gap-1.5 flex-wrap">
+                              <span className="inline-flex items-center gap-1 font-mono">
+                                <span className={`h-2 w-2 rounded-full ${palette.dotBg}`} />
+                                Rack {d.rackCode || '-'}
+                              </span>
+                              <span>·</span>
+                              <span>
+                                {d.fabricType || '-'} · {d.color || '-'}
+                              </span>
+                            </div>
+                            <div className="text-xs text-slate-500 font-mono">
+                              Lot {d.lotNo || '-'}
+                            </div>
+                          </td>
+                          <td className="p-3 border-r border-slate-200">
+                            <div className="font-bold text-slate-900">{d.issuedTo}</div>
+                            {d.receiverName && (
+                              <div className="text-xs text-slate-500">Recv: {d.receiverName}</div>
+                            )}
+                          </td>
+                          <td className="p-3 border-r border-slate-200 text-right font-mono tabular-nums font-extrabold text-blue-800 whitespace-nowrap">
+                            {fmtKg(d.weightKg)} kg
+                          </td>
+                          <td className="p-3 text-center whitespace-nowrap">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => setPrintSlipItems([d])}
+                                className="px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white hover:bg-slate-100 text-slate-800 text-xs font-bold flex items-center gap-1 cursor-pointer"
+                              >
+                                <Printer size={12} />
+                                <span>Slip</span>
+                              </button>
+                              {canDeleteRecords && (
+                                <button
+                                  type="button"
+                                  onClick={() => onDeleteDeliveryRecord(d)}
+                                  className="p-1.5 rounded-lg text-rose-600 hover:bg-rose-50 cursor-pointer"
+                                  title="Delete delivery & restore stock"
+                                >
+                                  <Trash2 size={14} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
         )}
       </div>
 
       {/* Unified Multi-PO / Multi-Rack Printable Supply Slip Modal */}
       {printSlipItems && printSlipItems.length > 0 && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-3xl w-full max-h-[92vh] overflow-y-auto p-6 border border-slate-300 shadow-2xl space-y-5">
+          <div
+            id="supply-slip-print-area"
+            className="bg-white rounded-2xl max-w-3xl w-full max-h-[92vh] overflow-y-auto p-6 border border-slate-300 shadow-2xl space-y-5"
+          >
             <div className="flex items-start justify-between border-b border-slate-300 pb-3">
               <div>
                 <h3 className="text-lg font-extrabold text-slate-900">
@@ -1384,7 +1639,7 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
               <button
                 type="button"
                 onClick={() => setPrintSlipItems(null)}
-                className="text-slate-500 hover:text-slate-900 cursor-pointer print:hidden"
+                className="text-slate-500 hover:text-slate-900 cursor-pointer no-print"
               >
                 <X size={20} />
               </button>
@@ -1490,18 +1745,18 @@ export const MultiPoDeliverySection: React.FC<MultiPoDeliverySectionProps> = ({
               <div className="border-t border-slate-400 pt-2">Store In-Charge</div>
             </div>
 
-            <div className="flex justify-end gap-2 pt-2 print:hidden">
+            <div className="flex justify-end gap-2 pt-2 no-print">
               <button
                 type="button"
                 onClick={() => setPrintSlipItems(null)}
-                className="px-4 py-2 text-xs font-bold border border-slate-300 text-slate-700 hover:bg-slate-100 rounded-xl cursor-pointer"
+                className="min-h-[42px] px-4 py-2 text-xs font-bold border border-slate-300 text-slate-700 hover:bg-slate-100 rounded-xl cursor-pointer"
               >
                 Close
               </button>
               <button
                 type="button"
                 onClick={() => window.print()}
-                className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl cursor-pointer flex items-center gap-1.5"
+                className="min-h-[42px] px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl cursor-pointer flex items-center gap-1.5"
               >
                 <Printer size={14} />
                 <span>Print Supply Slip</span>
