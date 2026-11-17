@@ -33,7 +33,9 @@ import {
   PackageCheck,
   Boxes,
   Columns3,
-  Tag
+  Tag,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import { saveLineAllocationsToFirestore, subscribeToLineAllocations, testFirestoreConnection } from './firebase';
 import FabricStoreTab from './components/FabricStoreTab';
@@ -222,6 +224,10 @@ export default function App() {
   const [lineModalBuyerFilter, setLineModalBuyerFilter] = useState('ALL');
   const [lineViewMode, setLineViewMode] = useState<'cards' | 'table'>('cards');
   const [selectedLineFilter, setSelectedLineFilter] = useState<string>('ALL');
+  const [expandedReadiness, setExpandedReadiness] = useState<{
+    slotKey: string;
+    field: 'fabric' | 'sewing' | 'finishing';
+  } | null>(null);
 
   // Authorization state for Line Allocation management (Protected on public URL)
   const [isAuthorized, setIsAuthorized] = useState<boolean>(() => {
@@ -1673,38 +1679,176 @@ export default function App() {
                               </div>
 
                               <div className="grid grid-cols-3 gap-1.5 text-xs">
-                                <div
-                                  className={`p-1.5 rounded-md border text-center ${
-                                    readiness.fabricOk
-                                      ? 'border-emerald-400 bg-emerald-50 text-emerald-950'
-                                      : 'border-rose-300 bg-rose-50 text-rose-950'
-                                  }`}
-                                >
-                                  <span className="text-[10px] uppercase font-bold text-slate-600 block">Fabric</span>
-                                  <span className="font-extrabold truncate block">{order['Fabric Update'] || 'Pending'}</span>
-                                </div>
+                                {(() => {
+                                  const slotKey = `${lineName}__${slotIndex}`;
+                                  const isCardExpanded = expandedReadiness?.slotKey === slotKey;
+                                  const toggleField = (field: 'fabric' | 'sewing' | 'finishing') => {
+                                    setExpandedReadiness((prev) =>
+                                      prev?.slotKey === slotKey && prev.field === field
+                                        ? null
+                                        : { slotKey, field }
+                                    );
+                                  };
+                                  const fabricText = String(order['Fabric Update'] || 'Pending');
+                                  const sewingText = String(order['Sewing Acc. Update'] || 'Pending');
+                                  const finishingText = String(order['Finishing Acc. Update'] || 'Pending');
 
-                                <div
-                                  className={`p-1.5 rounded-md border text-center ${
-                                    readiness.sewingOk
-                                      ? 'border-emerald-400 bg-emerald-50 text-emerald-950'
-                                      : 'border-rose-300 bg-rose-50 text-rose-950'
-                                  }`}
-                                >
-                                  <span className="text-[10px] uppercase font-bold text-slate-600 block">Sew Acc</span>
-                                  <span className="font-extrabold truncate block">{order['Sewing Acc. Update'] || 'Pending'}</span>
-                                </div>
+                                  return (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleField('fabric')}
+                                        title="Click to read full Fabric details"
+                                        className={`p-1.5 rounded-md border text-center cursor-pointer transition min-w-0 ${
+                                          readiness.fabricOk
+                                            ? 'border-emerald-400 bg-emerald-50 hover:bg-emerald-100/80 text-emerald-950'
+                                            : 'border-rose-300 bg-rose-50 hover:bg-rose-100/80 text-rose-950'
+                                        } ${
+                                          isCardExpanded && expandedReadiness?.field === 'fabric'
+                                            ? 'ring-2 ring-slate-900 ring-offset-1'
+                                            : ''
+                                        }`}
+                                      >
+                                        <span className="text-[10px] uppercase font-bold text-slate-600 flex items-center justify-center gap-0.5">
+                                          <span>Fabric</span>
+                                          {isCardExpanded && expandedReadiness?.field === 'fabric' ? (
+                                            <ChevronUp size={10} />
+                                          ) : (
+                                            <ChevronDown size={10} className="opacity-60" />
+                                          )}
+                                        </span>
+                                        <span className="font-extrabold truncate block">{fabricText}</span>
+                                      </button>
 
-                                <div
-                                  className={`p-1.5 rounded-md border text-center ${
-                                    readiness.finishingOk
-                                      ? 'border-emerald-400 bg-emerald-50 text-emerald-950'
-                                      : 'border-rose-300 bg-rose-50 text-rose-950'
-                                  }`}
-                                >
-                                  <span className="text-[10px] uppercase font-bold text-slate-600 block">Fin Acc</span>
-                                  <span className="font-extrabold truncate block">{order['Finishing Acc. Update'] || 'Pending'}</span>
-                                </div>
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleField('sewing')}
+                                        title="Click to read full Sewing Accessories details"
+                                        className={`p-1.5 rounded-md border text-center cursor-pointer transition min-w-0 ${
+                                          readiness.sewingOk
+                                            ? 'border-emerald-400 bg-emerald-50 hover:bg-emerald-100/80 text-emerald-950'
+                                            : 'border-rose-300 bg-rose-50 hover:bg-rose-100/80 text-rose-950'
+                                        } ${
+                                          isCardExpanded && expandedReadiness?.field === 'sewing'
+                                            ? 'ring-2 ring-slate-900 ring-offset-1'
+                                            : ''
+                                        }`}
+                                      >
+                                        <span className="text-[10px] uppercase font-bold text-slate-600 flex items-center justify-center gap-0.5">
+                                          <span>Sew Acc</span>
+                                          {isCardExpanded && expandedReadiness?.field === 'sewing' ? (
+                                            <ChevronUp size={10} />
+                                          ) : (
+                                            <ChevronDown size={10} className="opacity-60" />
+                                          )}
+                                        </span>
+                                        <span className="font-extrabold truncate block">{sewingText}</span>
+                                      </button>
+
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleField('finishing')}
+                                        title="Click to read full Finishing Accessories details"
+                                        className={`p-1.5 rounded-md border text-center cursor-pointer transition min-w-0 ${
+                                          readiness.finishingOk
+                                            ? 'border-emerald-400 bg-emerald-50 hover:bg-emerald-100/80 text-emerald-950'
+                                            : 'border-rose-300 bg-rose-50 hover:bg-rose-100/80 text-rose-950'
+                                        } ${
+                                          isCardExpanded && expandedReadiness?.field === 'finishing'
+                                            ? 'ring-2 ring-slate-900 ring-offset-1'
+                                            : ''
+                                        }`}
+                                      >
+                                        <span className="text-[10px] uppercase font-bold text-slate-600 flex items-center justify-center gap-0.5">
+                                          <span>Fin Acc</span>
+                                          {isCardExpanded && expandedReadiness?.field === 'finishing' ? (
+                                            <ChevronUp size={10} />
+                                          ) : (
+                                            <ChevronDown size={10} className="opacity-60" />
+                                          )}
+                                        </span>
+                                        <span className="font-extrabold truncate block">{finishingText}</span>
+                                      </button>
+
+                                      {isCardExpanded && (
+                                        <div className="col-span-3 mt-1 rounded-lg border border-slate-300 bg-slate-50 p-2.5 space-y-2 text-left">
+                                          <div className="flex items-center justify-between gap-2 pb-1.5 border-b border-slate-200">
+                                            <span className="text-[11px] font-extrabold uppercase tracking-wide text-slate-700">
+                                              Full Accessories &amp; Fabric Details
+                                            </span>
+                                            <button
+                                              type="button"
+                                              onClick={() => setExpandedReadiness(null)}
+                                              className="p-0.5 rounded text-slate-500 hover:text-slate-900 hover:bg-slate-200 cursor-pointer"
+                                              title="Close details"
+                                            >
+                                              <X size={13} />
+                                            </button>
+                                          </div>
+
+                                          <div className="space-y-1.5 text-xs">
+                                            <div
+                                              className={`p-2 rounded border ${
+                                                expandedReadiness?.field === 'fabric'
+                                                  ? 'bg-white border-slate-400 shadow-2xs'
+                                                  : 'bg-white/70 border-slate-200'
+                                              }`}
+                                            >
+                                              <span className="text-[10px] font-bold uppercase text-slate-500 block">
+                                                Fabric Update
+                                              </span>
+                                              <span
+                                                className={`font-bold whitespace-normal break-words block ${
+                                                  readiness.fabricOk ? 'text-emerald-800' : 'text-rose-800'
+                                                }`}
+                                              >
+                                                {fabricText}
+                                              </span>
+                                            </div>
+
+                                            <div
+                                              className={`p-2 rounded border ${
+                                                expandedReadiness?.field === 'sewing'
+                                                  ? 'bg-white border-slate-400 shadow-2xs'
+                                                  : 'bg-white/70 border-slate-200'
+                                              }`}
+                                            >
+                                              <span className="text-[10px] font-bold uppercase text-slate-500 block">
+                                                Sewing Acc. Update
+                                              </span>
+                                              <span
+                                                className={`font-bold whitespace-normal break-words block ${
+                                                  readiness.sewingOk ? 'text-emerald-800' : 'text-rose-800'
+                                                }`}
+                                              >
+                                                {sewingText}
+                                              </span>
+                                            </div>
+
+                                            <div
+                                              className={`p-2 rounded border ${
+                                                expandedReadiness?.field === 'finishing'
+                                                  ? 'bg-white border-slate-400 shadow-2xs'
+                                                  : 'bg-white/70 border-slate-200'
+                                              }`}
+                                            >
+                                              <span className="text-[10px] font-bold uppercase text-slate-500 block">
+                                                Finishing Acc. Update
+                                              </span>
+                                              <span
+                                                className={`font-bold whitespace-normal break-words block ${
+                                                  readiness.finishingOk ? 'text-emerald-800' : 'text-rose-800'
+                                                }`}
+                                              >
+                                                {finishingText}
+                                              </span>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </>
+                                  );
+                                })()}
                               </div>
                             </div>
                           </div>
