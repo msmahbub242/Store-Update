@@ -19,12 +19,480 @@
         }
       },
       "required": ["allocations"]
+    },
+    "FabricUser": {
+      "title": "FabricUser",
+      "description": "User account and role configuration for Fabric Receiving and Supply Management",
+      "type": "object",
+      "properties": {
+        "username": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 40,
+          "pattern": "^[a-zA-Z0-9_.-]+$"
+        },
+        "fullName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 100
+        },
+        "passwordHash": {
+          "type": "string",
+          "minLength": 16,
+          "maxLength": 128
+        },
+        "role": {
+          "type": "string",
+          "enum": ["master_admin", "store_manager", "receiver", "issuer", "viewer"]
+        },
+        "isActive": {
+          "type": "boolean"
+        },
+        "department": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdBy": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": ["username", "fullName", "passwordHash", "role", "isActive", "createdAt", "updatedAt"]
+    },
+    "FabricRack": {
+      "title": "FabricRack",
+      "description": "Physical fabric warehouse rack definition",
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "zone": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "capacityKg": {
+          "type": "number"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "isActive": {
+          "type": "boolean"
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": ["code", "zone", "capacityKg", "isActive", "createdAt", "updatedAt"]
+    },
+    "FabricRequirement": {
+      "title": "FabricRequirement",
+      "description": "Pre-entered PO fabric requirement plan (fabric type, color, GSM, required qty) before receiving",
+      "type": "object",
+      "properties": {
+        "buyer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "po": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "style": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "itemName": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "fileNo": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "shipDate": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "orderDzn": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "fabricType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "color": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "gsm": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "requiredQtyKg": {
+          "type": "number"
+        },
+        "supplier": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "remark": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "createdBy": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "buyer",
+        "po",
+        "fabricType",
+        "color",
+        "requiredQtyKg",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "FabricReceiving": {
+      "title": "FabricReceiving",
+      "description": "Incoming fabric receiving batch tied to buyer PO, requirement, challan, and storage rack",
+      "type": "object",
+      "properties": {
+        "buyer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "po": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "style": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "itemName": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "fileNo": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "shipDate": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "orderDzn": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "requirementId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "requiredQtyKg": {
+          "type": "number"
+        },
+        "challanGroupId": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "rackId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "rackCode": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32
+        },
+        "fabricType": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "color": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "gsm": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "weightKg": {
+          "type": "number"
+        },
+        "rollCount": {
+          "type": "number"
+        },
+        "lotNo": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "challanNo": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "receiveDate": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32
+        },
+        "supplier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "remark": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "createdBy": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "updatedAt": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "buyer",
+        "po",
+        "rackId",
+        "rackCode",
+        "fabricType",
+        "color",
+        "weightKg",
+        "lotNo",
+        "challanNo",
+        "receiveDate",
+        "supplier",
+        "createdBy",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "FabricDelivery": {
+      "title": "FabricDelivery",
+      "description": "Fabric delivery/supply transaction (Full or Partial) issued against a received batch",
+      "type": "object",
+      "properties": {
+        "receivingId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "supplyNo": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "buyer": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "po": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "style": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "itemName": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "fileNo": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "shipDate": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "rackCode": {
+          "type": "string",
+          "maxLength": 32
+        },
+        "fabricType": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "color": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "gsm": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "lotNo": {
+          "type": "string",
+          "maxLength": 80
+        },
+        "deliveryType": {
+          "type": "string",
+          "enum": ["Full", "Partial"]
+        },
+        "weightKg": {
+          "type": "number"
+        },
+        "rollCount": {
+          "type": "number"
+        },
+        "issuedTo": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "receiverName": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "deliveryDate": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 32
+        },
+        "remark": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "createdBy": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "receivingId",
+        "supplyNo",
+        "buyer",
+        "po",
+        "deliveryType",
+        "weightKg",
+        "issuedTo",
+        "deliveryDate",
+        "createdBy",
+        "createdAt"
+      ]
+    },
+    "FabricAuditLog": {
+      "title": "FabricAuditLog",
+      "description": "Immutable activity audit log for Fabric Store operations and role management",
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "module": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "details": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "actorUsername": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "actorRole": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 40
+        },
+        "createdAt": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": ["action", "module", "details", "actorUsername", "actorRole", "createdAt"]
     }
   },
   "firestore": {
     "/line_allocations/{docId}": {
       "schema": "LineAllocations",
       "description": "Collection storing the active sewing line PO allocations"
+    },
+    "/fabric_users/{userId}": {
+      "schema": "FabricUser",
+      "description": "User accounts and roles for Fabric Store access control"
+    },
+    "/fabric_racks/{rackId}": {
+      "schema": "FabricRack",
+      "description": "Warehouse storage racks for fabric stock tracking"
+    },
+    "/fabric_requirements/{reqId}": {
+      "schema": "FabricRequirement",
+      "description": "Pre-entered PO fabric requirements before receiving"
+    },
+    "/fabric_receivings/{receivingId}": {
+      "schema": "FabricReceiving",
+      "description": "Fabric receiving ledger records"
+    },
+    "/fabric_deliveries/{deliveryId}": {
+      "schema": "FabricDelivery",
+      "description": "Fabric supply and delivery transactions (Full/Partial)"
+    },
+    "/fabric_audit_logs/{logId}": {
+      "schema": "FabricAuditLog",
+      "description": "Audit logs for Fabric Store actions"
     }
   }
 }

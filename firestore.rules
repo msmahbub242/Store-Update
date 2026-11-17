@@ -5,8 +5,252 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isStrLen(val, minLen, maxLen) {
+      return val is string && val.size() >= minLen && val.size() <= maxLen;
+    }
+
+    function isOptStr(data, key, maxLen) {
+      return !(key in data) || (data[key] is string && data[key].size() <= maxLen);
+    }
+
+    function isOptNum(data, key, minVal, maxVal) {
+      return !(key in data) || (data[key] is number && data[key] >= minVal && data[key] <= maxVal);
+    }
+
+    // Connection health check endpoint
+    match /test/connection {
+      allow get: if true;
+    }
+
+    // Existing Line Wise PO Allocations
+    function isValidLineAllocation(data) {
+      return data.keys().hasAll(['allocations']) &&
+        data.keys().hasOnly(['allocations', 'updatedAt', 'updatedBy']) &&
+        data.allocations is map &&
+        isOptStr(data, 'updatedAt', 64) &&
+        isOptStr(data, 'updatedBy', 64);
+    }
+
     match /line_allocations/{docId} {
-      allow read, write: if true;
+      allow get: if isValidId(docId);
+      allow list: if true;
+      allow create: if isValidId(docId) && isValidLineAllocation(incoming());
+      allow update: if isValidId(docId) && isValidLineAllocation(incoming());
+    }
+
+    // Fabric Store Users & Roles
+    function isValidFabricUser(data) {
+      return data.keys().hasAll(['username', 'fullName', 'passwordHash', 'role', 'isActive', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['username', 'fullName', 'passwordHash', 'role', 'isActive', 'department', 'createdAt', 'updatedAt', 'createdBy']) &&
+        isStrLen(data.username, 2, 40) &&
+        data.username.matches('^[a-zA-Z0-9_.-]+$') &&
+        isStrLen(data.fullName, 2, 100) &&
+        isStrLen(data.passwordHash, 16, 128) &&
+        data.role in ['master_admin', 'store_manager', 'receiver', 'issuer', 'viewer'] &&
+        data.isActive is bool &&
+        isOptStr(data, 'department', 80) &&
+        isStrLen(data.createdAt, 4, 64) &&
+        isStrLen(data.updatedAt, 4, 64) &&
+        isOptStr(data, 'createdBy', 64);
+    }
+
+    match /fabric_users/{userId} {
+      allow get: if isValidId(userId);
+      allow list: if true;
+      allow create: if isValidId(userId) && isValidFabricUser(incoming());
+      allow update: if isValidId(userId) &&
+        isValidFabricUser(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().username == existing().username;
+      allow delete: if isValidId(userId);
+    }
+
+    // Fabric Warehouse Racks
+    function isValidFabricRack(data) {
+      return data.keys().hasAll(['code', 'zone', 'capacityKg', 'isActive', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['code', 'zone', 'capacityKg', 'description', 'isActive', 'createdAt', 'updatedAt']) &&
+        isStrLen(data.code, 1, 32) &&
+        isStrLen(data.zone, 1, 64) &&
+        data.capacityKg is number && data.capacityKg >= 0 && data.capacityKg <= 10000000 &&
+        isOptStr(data, 'description', 200) &&
+        data.isActive is bool &&
+        isStrLen(data.createdAt, 4, 64) &&
+        isStrLen(data.updatedAt, 4, 64);
+    }
+
+    match /fabric_racks/{rackId} {
+      allow get: if isValidId(rackId);
+      allow list: if true;
+      allow create: if isValidId(rackId) && isValidFabricRack(incoming());
+      allow update: if isValidId(rackId) &&
+        isValidFabricRack(incoming()) &&
+        incoming().createdAt == existing().createdAt;
+      allow delete: if isValidId(rackId);
+    }
+
+    // Fabric Requirements (Pre-Receiving PO Fabric Booking)
+    function isValidFabricRequirement(data) {
+      return data.keys().hasAll([
+          'buyer', 'po', 'fabricType', 'color', 'requiredQtyKg',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'buyer', 'po', 'style', 'itemName', 'fileNo', 'shipDate', 'orderDzn',
+          'fabricType', 'color', 'gsm', 'requiredQtyKg', 'supplier', 'remark',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        isStrLen(data.buyer, 1, 120) &&
+        isStrLen(data.po, 1, 100) &&
+        isOptStr(data, 'style', 160) &&
+        isOptStr(data, 'itemName', 200) &&
+        isOptStr(data, 'fileNo', 64) &&
+        isOptStr(data, 'shipDate', 64) &&
+        isOptStr(data, 'orderDzn', 40) &&
+        isStrLen(data.fabricType, 1, 120) &&
+        isStrLen(data.color, 1, 120) &&
+        isOptStr(data, 'gsm', 40) &&
+        data.requiredQtyKg is number && data.requiredQtyKg > 0 && data.requiredQtyKg <= 1000000 &&
+        isOptStr(data, 'supplier', 120) &&
+        isOptStr(data, 'remark', 400) &&
+        isStrLen(data.createdBy, 1, 64) &&
+        isStrLen(data.createdAt, 4, 64) &&
+        isStrLen(data.updatedAt, 4, 64);
+    }
+
+    match /fabric_requirements/{reqId} {
+      allow get: if isValidId(reqId);
+      allow list: if true;
+      allow create: if isValidId(reqId) && isValidFabricRequirement(incoming());
+      allow update: if isValidId(reqId) &&
+        isValidFabricRequirement(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().createdBy == existing().createdBy;
+      allow delete: if isValidId(reqId);
+    }
+
+    // Fabric Receiving Entries
+    function isValidFabricReceiving(data) {
+      return data.keys().hasAll([
+          'buyer', 'po', 'rackId', 'rackCode', 'fabricType', 'color',
+          'weightKg', 'lotNo', 'challanNo', 'receiveDate', 'supplier',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'buyer', 'po', 'style', 'itemName', 'fileNo', 'shipDate', 'orderDzn',
+          'requirementId', 'requiredQtyKg', 'challanGroupId',
+          'rackId', 'rackCode', 'fabricType', 'color', 'gsm', 'weightKg',
+          'rollCount', 'lotNo', 'challanNo', 'receiveDate', 'supplier', 'remark',
+          'createdBy', 'createdAt', 'updatedAt'
+        ]) &&
+        isStrLen(data.buyer, 1, 120) &&
+        isStrLen(data.po, 1, 100) &&
+        isOptStr(data, 'style', 160) &&
+        isOptStr(data, 'itemName', 200) &&
+        isOptStr(data, 'fileNo', 64) &&
+        isOptStr(data, 'shipDate', 64) &&
+        isOptStr(data, 'orderDzn', 40) &&
+        isOptStr(data, 'requirementId', 128) &&
+        isOptNum(data, 'requiredQtyKg', 0, 1000000) &&
+        isOptStr(data, 'challanGroupId', 128) &&
+        isStrLen(data.rackId, 1, 64) &&
+        isStrLen(data.rackCode, 1, 32) &&
+        isStrLen(data.fabricType, 1, 120) &&
+        isStrLen(data.color, 1, 120) &&
+        isOptStr(data, 'gsm', 40) &&
+        data.weightKg is number && data.weightKg > 0 && data.weightKg <= 1000000 &&
+        isOptNum(data, 'rollCount', 0, 100000) &&
+        isStrLen(data.lotNo, 1, 80) &&
+        isStrLen(data.challanNo, 1, 80) &&
+        isStrLen(data.receiveDate, 4, 32) &&
+        isStrLen(data.supplier, 1, 120) &&
+        isOptStr(data, 'remark', 400) &&
+        isStrLen(data.createdBy, 1, 64) &&
+        isStrLen(data.createdAt, 4, 64) &&
+        isStrLen(data.updatedAt, 4, 64);
+    }
+
+    match /fabric_receivings/{receivingId} {
+      allow get: if isValidId(receivingId);
+      allow list: if true;
+      allow create: if isValidId(receivingId) && isValidFabricReceiving(incoming());
+      allow update: if isValidId(receivingId) &&
+        isValidFabricReceiving(incoming()) &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().createdBy == existing().createdBy;
+      allow delete: if isValidId(receivingId);
+    }
+
+    // Fabric Delivery / Supply Entries
+    function isValidFabricDelivery(data) {
+      return data.keys().hasAll([
+          'receivingId', 'supplyNo', 'buyer', 'po', 'deliveryType',
+          'weightKg', 'issuedTo', 'deliveryDate', 'createdBy', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'receivingId', 'supplyNo', 'buyer', 'po', 'style', 'itemName',
+          'fileNo', 'shipDate', 'rackCode', 'fabricType', 'color', 'gsm',
+          'lotNo', 'deliveryType', 'weightKg', 'rollCount', 'issuedTo',
+          'receiverName', 'deliveryDate', 'remark', 'createdBy', 'createdAt'
+        ]) &&
+        isStrLen(data.receivingId, 1, 128) &&
+        isStrLen(data.supplyNo, 1, 80) &&
+        isStrLen(data.buyer, 1, 120) &&
+        isStrLen(data.po, 1, 100) &&
+        isOptStr(data, 'style', 160) &&
+        isOptStr(data, 'itemName', 200) &&
+        isOptStr(data, 'fileNo', 64) &&
+        isOptStr(data, 'shipDate', 64) &&
+        isOptStr(data, 'rackCode', 32) &&
+        isOptStr(data, 'fabricType', 120) &&
+        isOptStr(data, 'color', 120) &&
+        isOptStr(data, 'gsm', 40) &&
+        isOptStr(data, 'lotNo', 80) &&
+        data.deliveryType in ['Full', 'Partial'] &&
+        data.weightKg is number && data.weightKg > 0 && data.weightKg <= 1000000 &&
+        isOptNum(data, 'rollCount', 0, 100000) &&
+        isStrLen(data.issuedTo, 1, 100) &&
+        isOptStr(data, 'receiverName', 100) &&
+        isStrLen(data.deliveryDate, 4, 32) &&
+        isOptStr(data, 'remark', 400) &&
+        isStrLen(data.createdBy, 1, 64) &&
+        isStrLen(data.createdAt, 4, 64);
+    }
+
+    match /fabric_deliveries/{deliveryId} {
+      allow get: if isValidId(deliveryId);
+      allow list: if true;
+      allow create: if isValidId(deliveryId) && isValidFabricDelivery(incoming());
+      allow delete: if isValidId(deliveryId);
+    }
+
+    // Fabric Audit Logs (Append-only)
+    function isValidFabricAuditLog(data) {
+      return data.keys().hasAll(['action', 'module', 'details', 'actorUsername', 'actorRole', 'createdAt']) &&
+        data.keys().hasOnly(['action', 'module', 'details', 'actorUsername', 'actorRole', 'createdAt']) &&
+        isStrLen(data.action, 1, 80) &&
+        isStrLen(data.module, 1, 60) &&
+        isStrLen(data.details, 1, 500) &&
+        isStrLen(data.actorUsername, 1, 64) &&
+        isStrLen(data.actorRole, 1, 40) &&
+        isStrLen(data.createdAt, 4, 64);
+    }
+
+    match /fabric_audit_logs/{logId} {
+      allow get: if isValidId(logId);
+      allow list: if true;
+      allow create: if isValidId(logId) && isValidFabricAuditLog(incoming());
     }
   }
 }

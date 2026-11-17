@@ -33,9 +33,11 @@ import {
   ShieldCheck,
   KeyRound,
   LogOut,
-  Database
+  Database,
+  Warehouse
 } from 'lucide-react';
 import { saveLineAllocationsToFirestore, subscribeToLineAllocations, testFirestoreConnection } from './firebase';
+import FabricStoreTab from './components/FabricStoreTab';
 
 const GOOGLE_SPREADSHEET_ID = '13JOa8EhpNDESBd7aEVpyu8PUjfh_-Fgk';
 const SHEET_BASE = `https://docs.google.com/spreadsheets/d/${GOOGLE_SPREADSHEET_ID}`;
@@ -47,26 +49,26 @@ interface TabItem {
 }
 
 const INITIAL_TABS: TabItem[] = [
-  { name: 'LC WAIKIKI(Tariq sir)', gid: '1220923299' },
-  { name: 'BR sujoy', gid: '1683281169' },
-  { name: 'BR Fahim', gid: '1827972100' },
-  { name: 'Monoprix', gid: '1682598713' },
-  { name: 'TESCO', gid: '825869882' },
-  { name: 'OVS', gid: '1430838278' },
-  { name: 'Madam', gid: '685385370' },
+  { name: 'LC WAIKIKI(Tariq sir)', gid: '97826635' },
+  { name: 'BR sujoy', gid: '381337669' },
+  { name: 'BR Fahim', gid: '516468905' },
+  { name: 'Monoprix', gid: '1853199385' },
+  { name: 'TESCO', gid: '2088676130' },
+  { name: 'OVS', gid: '190172083' },
+  { name: 'Madam', gid: '724312790' },
 ];
 
 const TOTAL_SEWING_LINES = 15;
 const ALL_LINE_NAMES = Array.from({ length: TOTAL_SEWING_LINES }, (_, i) => `Line ${String(i + 1).padStart(2, '0')}`);
 const LINE_ALLOCATION_STORAGE_KEY = 'felix_sewing_line_allocations_v1';
-const TABS_DATA_CACHE_KEY = 'felix_tabs_data_cache_v5';
-const TABS_LIST_CACHE_KEY = 'felix_tabs_list_cache_v5';
-const LAST_SYNC_CACHE_KEY = 'felix_last_sync_time_v5';
+const TABS_DATA_CACHE_KEY = 'felix_tabs_data_cache_v6';
+const TABS_LIST_CACHE_KEY = 'felix_tabs_list_cache_v6';
+const LAST_SYNC_CACHE_KEY = 'felix_last_sync_time_v6';
 
 // Canonical column name normalizer to unify case differences across different buyer tabs
 const normalizeHeader = (rawKey: string): string | null => {
   const k = rawKey.trim().toLowerCase();
-  if (!k || k.endsWith('_1') || k.endsWith('_2') || k.startsWith('__parsed_extra')) {
+  if (!k || /^_\d+$/.test(k) || k.startsWith('__parsed_extra')) {
     return null;
   }
   if (k.includes('file')) return 'File No';
@@ -285,13 +287,9 @@ export default function App() {
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 7000);
       const bustUrl = `${DISCOVERY_URL}?_cb=${Date.now()}`;
-      const res = await fetch(bustUrl, { 
+      const res = await fetch(bustUrl, {
         signal: controller.signal,
         cache: 'no-store',
-        headers: {
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
-          'Pragma': 'no-cache'
-        }
       });
       clearTimeout(timeoutId);
       if (!res.ok) return tabs;
@@ -327,19 +325,15 @@ export default function App() {
 
   // Helper to fetch and parse a single tab's CSV with cache-busting & fast timeout protection
   const parseSingleTab = async (tabItem: TabItem): Promise<any[]> => {
-    // Direct export CSV endpoint with zero publishing lag
-    const csvUrl = `${SHEET_BASE}/export?format=csv&gid=${tabItem.gid}&_cb=${Date.now()}`;
+    // Direct gviz CSV endpoint (returns 200 CORS CSV without googleusercontent redirect 400 errors)
+    const csvUrl = `${SHEET_BASE}/gviz/tq?tqx=out:csv&gid=${tabItem.gid}&_cb=${Date.now()}`;
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 8500);
 
     try {
-      const response = await fetch(csvUrl, { 
+      const response = await fetch(csvUrl, {
         signal: controller.signal,
         cache: 'no-store',
-        headers: {
-          'Cache-Control': 'no-cache, no-store, must-revalidate',
-          'Pragma': 'no-cache'
-        }
       });
       clearTimeout(timeoutId);
       if (!response.ok) {
@@ -372,6 +366,13 @@ export default function App() {
                   }
                 }
               });
+              // Skip repeated header rows embedded mid-sheet
+              if (
+                String(newRow['PO'] || '').trim().toUpperCase() === 'PO' &&
+                String(newRow['STYLE'] || '').trim().toUpperCase() === 'STYLE'
+              ) {
+                return null;
+              }
               // Assign a unique row ID for line allocation
               newRow._uniqueKey = getOrderRowKey(newRow, idx);
               return newRow;
@@ -481,15 +482,23 @@ export default function App() {
     return () => clearInterval(intervalId);
   }, [isAutoRefreshEnabled, syncAllData]);
 
-  // Master list of all orders across all tabs
+  // Master list of all orders across all tabs (guaranteed unique _uniqueKey)
   const allMasterOrders = useMemo(() => {
     const list: any[] = [];
+    const seenKeys = new Set<string>();
     Object.entries(tabsData).forEach(([tabName, rows]) => {
       rows.forEach((r, idx) => {
-        list.push({ 
-          ...r, 
-          _tabSource: tabName, 
-          _uniqueKey: r._uniqueKey || getOrderRowKey(r, idx)
+        let key = getOrderRowKey({ ...r, _tabSource: tabName }, idx);
+        if (seenKeys.has(key)) {
+          let suffix = 1;
+          while (seenKeys.has(`${key}__${suffix}`)) suffix++;
+          key = `${key}__${suffix}`;
+        }
+        seenKeys.add(key);
+        list.push({
+          ...r,
+          _tabSource: tabName,
+          _uniqueKey: key,
         });
       });
     });
@@ -608,9 +617,16 @@ export default function App() {
   // Line allocation modifiers (Guarded by authorization & saved to Cloud Database)
   const addPoToLine = (lineName: string, orderKey: string) => {
     if (!requireAuthorization(lineName)) return;
+    const targetOrder = getOrderFromKey(orderKey);
     setLineAllocations(prev => {
       const current = prev[lineName] || [];
       if (current.includes(orderKey)) return prev;
+      if (
+        targetOrder &&
+        current.some(k => getOrderFromKey(k)?._uniqueKey === targetOrder._uniqueKey)
+      ) {
+        return prev;
+      }
       if (current.length >= 5) {
         alert('Each line can have a maximum of 5 Upcoming POs.');
         return prev;
@@ -629,7 +645,9 @@ export default function App() {
     setLineAllocations(prev => {
       const updated = {
         ...prev,
-        [lineName]: (prev[lineName] || []).filter(k => k !== orderKey)
+        [lineName]: (prev[lineName] || []).filter(
+          k => k !== orderKey && getOrderFromKey(k)?._uniqueKey !== orderKey
+        )
       };
       persistAllocationsToDb(updated, authUsername || 'planner');
       return updated;
@@ -984,7 +1002,8 @@ export default function App() {
         </div>
       )}
       
-      {/* Summary Cards */}
+      {/* Summary Cards (Hidden inside Fabric Receiving & Supply tab which has its own live Store KPIs) */}
+      {(activeTabName !== '__FABRIC_STORE__' || isUniversalSearchActive) && (
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
         {activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
           <>
@@ -1091,6 +1110,7 @@ export default function App() {
           </>
         )}
       </div>
+      )}
 
       {/* 2. SEARCH & ACTION BAR */}
       <div className="bg-white p-4 rounded-2xl shadow-xs border border-slate-200 mb-4">
@@ -1122,6 +1142,7 @@ export default function App() {
           </div>
 
           {/* Action Buttons */}
+          {!(activeTabName === '__FABRIC_STORE__' && !isUniversalSearchActive) && (
           <div className="flex items-center gap-2">
             {activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
               <>
@@ -1217,6 +1238,7 @@ export default function App() {
               </>
             )}
           </div>
+          )}
         </div>
 
         {/* Universal Search Active Notice Badge */}
@@ -1268,6 +1290,23 @@ export default function App() {
           </span>
         </button>
 
+        {/* NEW: Fabric Receiving & Supply Management Tab */}
+        <button
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-sm transition-all whitespace-nowrap cursor-pointer shadow-xs ${
+            !isUniversalSearchActive && activeTabName === '__FABRIC_STORE__'
+              ? 'bg-emerald-700 text-white shadow-md shadow-emerald-600/25 ring-2 ring-emerald-700 ring-offset-2'
+              : 'bg-white text-slate-700 border border-slate-200 hover:bg-emerald-50/70 hover:text-emerald-800'
+          }`}
+          onClick={() => {
+            setGlobalFilter('');
+            setActiveTabName('__FABRIC_STORE__');
+            setCurrentPage(1);
+          }}
+        >
+          <Warehouse size={16} className={!isUniversalSearchActive && activeTabName === '__FABRIC_STORE__' ? 'text-emerald-100' : 'text-emerald-600'} />
+          <span>Fabric Receiving & Supply</span>
+        </button>
+
         {/* All Buyers (Combined) Tab */}
         <button
           className={`flex items-center gap-1.5 px-4.5 py-2.5 rounded-xl font-bold text-sm transition-all whitespace-nowrap cursor-pointer ${
@@ -1312,10 +1351,12 @@ export default function App() {
       </div>
 
       {/* ========================================================================= */}
-      {/* RENDER CONTENT: EITHER "LINE WISE UPDATE" OR "STANDARD TABLE DASHBOARD" */}
+      {/* RENDER CONTENT: FABRIC STORE, LINE WISE UPDATE, OR STANDARD TABLE         */}
       {/* ========================================================================= */}
 
-      {activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
+      {activeTabName === '__FABRIC_STORE__' && !isUniversalSearchActive ? (
+        <FabricStoreTab allMasterOrders={allMasterOrders} lineNames={ALL_LINE_NAMES} />
+      ) : activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
         /* LINE WISE UPDATE VIEW */
         <div className="space-y-6">
           {/* Line Filter Pills (Line 01 to Line 15) */}
@@ -1453,7 +1494,7 @@ export default function App() {
 
                         return (
                           <div 
-                            key={order._uniqueKey || slotIndex} 
+                            key={`slot_${lineName}_${slotIndex}_${allocatedKeys[slotIndex] || order._uniqueKey}`} 
                             className={`rounded-2xl border-2 transition-all p-3.5 bg-white shadow-2xs ${
                               isRunning 
                                 ? 'border-amber-500 ring-2 ring-amber-400/20' 
@@ -2169,7 +2210,7 @@ export default function App() {
 
                       return (
                         <div 
-                          key={orderKey}
+                          key={`queue_${editingLine}_${idx}_${orderKey}`}
                           className={`p-3 rounded-2xl border flex items-center justify-between gap-3 ${
                             isNext ? 'bg-amber-50/70 border-amber-300 ring-1 ring-amber-300' : 'bg-slate-50 border-slate-200'
                           }`}
@@ -2304,14 +2345,16 @@ export default function App() {
                       return true;
                     })
                     .slice(0, 40)
-                    .map(order => {
-                      const alreadyInThisLine = (lineAllocations[editingLine] || []).includes(order._uniqueKey);
+                    .map((order, idx) => {
+                      const alreadyInThisLine = (lineAllocations[editingLine] || []).some(
+                        k => k === order._uniqueKey || getOrderFromKey(k)?._uniqueKey === order._uniqueKey
+                      );
                       const isLineFull = (lineAllocations[editingLine] || []).length >= 5;
                       const readiness = checkOrderReadiness(order);
 
                       return (
                         <div 
-                          key={order._uniqueKey} 
+                          key={`avail_${order._uniqueKey}_${idx}`} 
                           className="bg-white p-2.5 rounded-xl border border-slate-200 flex items-center justify-between gap-2 text-xs hover:border-slate-300"
                         >
                           <div>
