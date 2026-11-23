@@ -40,6 +40,7 @@ import {
 import { saveLineAllocationsToFirestore, subscribeToLineAllocations, testFirestoreConnection } from './firebase';
 import FabricStoreTab from './components/FabricStoreTab';
 import { PublicRackView } from './components/fabric-store/PublicRackView';
+import { BrFabricUpdateView, BrFabricUpdateRow } from './components/BrFabricUpdateView';
 
 const GOOGLE_SPREADSHEET_ID = '13JOa8EhpNDESBd7aEVpyu8PUjfh_-Fgk';
 const SHEET_BASE = `https://docs.google.com/spreadsheets/d/${GOOGLE_SPREADSHEET_ID}`;
@@ -51,21 +52,24 @@ interface TabItem {
 }
 
 const INITIAL_TABS: TabItem[] = [
-  { name: 'LC WAIKIKI(Tariq sir)', gid: '97826635' },
-  { name: 'BR sujoy', gid: '381337669' },
-  { name: 'BR Fahim', gid: '516468905' },
-  { name: 'Monoprix', gid: '1853199385' },
-  { name: 'TESCO', gid: '2088676130' },
-  { name: 'OVS', gid: '190172083' },
-  { name: 'Madam', gid: '724312790' },
+  { name: 'LC WAIKIKI(Tariq sir)', gid: '1010418228' },
+  { name: 'Madam', gid: '1241943445' },
+  { name: 'BR Fahim Sujoy', gid: '1104604649' },
+  { name: 'BR FABRIC UPDATE', gid: '847751726' },
+  { name: 'Monoprix', gid: '1867240217' },
+  { name: 'TESCO', gid: '1231388255' },
+  { name: 'OVS', gid: '184665161' },
 ];
+
+const isBrFabricUpdateTab = (name: string) =>
+  name.trim().toUpperCase() === 'BR FABRIC UPDATE';
 
 const TOTAL_SEWING_LINES = 15;
 const ALL_LINE_NAMES = Array.from({ length: TOTAL_SEWING_LINES }, (_, i) => `Line ${String(i + 1).padStart(2, '0')}`);
 const LINE_ALLOCATION_STORAGE_KEY = 'felix_sewing_line_allocations_v1';
-const TABS_DATA_CACHE_KEY = 'felix_tabs_data_cache_v6';
-const TABS_LIST_CACHE_KEY = 'felix_tabs_list_cache_v6';
-const LAST_SYNC_CACHE_KEY = 'felix_last_sync_time_v6';
+const TABS_DATA_CACHE_KEY = 'felix_tabs_data_cache_v8';
+const TABS_LIST_CACHE_KEY = 'felix_tabs_list_cache_v8';
+const LAST_SYNC_CACHE_KEY = 'felix_last_sync_time_v8';
 
 // Canonical column name normalizer to unify case differences across different buyer tabs
 const normalizeHeader = (rawKey: string): string | null => {
@@ -358,6 +362,14 @@ export default function App() {
       }
 
       if (foundTabs.length > 0) {
+        // Ensure BR FABRIC UPDATE stays positioned immediately after BR Fahim Sujoy
+        const brFabricIdx = foundTabs.findIndex(t => isBrFabricUpdateTab(t.name));
+        const brSujoyIdx = foundTabs.findIndex(t => t.name.toLowerCase().includes('br fahim'));
+        if (brFabricIdx !== -1 && brSujoyIdx !== -1 && brFabricIdx !== brSujoyIdx + 1) {
+          const [brFabTab] = foundTabs.splice(brFabricIdx, 1);
+          const updatedSujoyIdx = foundTabs.findIndex(t => t.name.toLowerCase().includes('br fahim'));
+          foundTabs.splice(updatedSujoyIdx + 1, 0, brFabTab);
+        }
         setTabs(foundTabs);
         return foundTabs;
       }
@@ -367,97 +379,274 @@ export default function App() {
     return tabs;
   }, [tabs]);
 
+  // Multi-block parser tailored for "BR FABRIC UPDATE" (FILE NO / PO / STYLE blocks + COLOR/SIZE rows + unit columns)
+  const parseBrFabricUpdateRows = (rawRows: string[][], tabName: string): BrFabricUpdateRow[] => {
+    let currentFileNo = '';
+    let currentPo = '';
+    let currentStyle = '';
+    let currentColor = '';
+
+    let colMap = {
+      color: 0,
+      size: 1,
+      dia: 2,
+      fileReq: 3,
+      overCon: 5,
+      addReplace: 6,
+      totalReq: 7,
+      storeRcvd: 9,
+      rcvdBal: 11,
+      cuttingSupply: 13,
+      storeInHand: 15,
+      reqSupBal: 17,
+      remarks: 19,
+    };
+
+    const parsedRows: BrFabricUpdateRow[] = [];
+
+    for (let rIdx = 0; rIdx < rawRows.length; rIdx++) {
+      const cells = rawRows[rIdx];
+      if (!Array.isArray(cells)) continue;
+      const row = cells.map((c) => String(c ?? '').trim());
+      if (!row.some(Boolean)) continue;
+
+      const upperRow = row.map((c) => c.toUpperCase());
+
+      // Detect PO/File block header row (e.g. FILE NO | 108 | PO | 4500042685 | STYLE | RDMP271CPT903)
+      const hasFileNoLabel = upperRow.some((c) => c === 'FILE NO' || c === 'FILE');
+      const hasPoLabel = upperRow.some((c) => c === 'PO' || c === 'PO NO');
+      if (hasFileNoLabel || (hasPoLabel && upperRow.some((c) => c === 'STYLE'))) {
+        const readNextVal = (startIdx: number) => {
+          for (let j = startIdx + 1; j < row.length; j++) {
+            const u = upperRow[j];
+            if (u === 'FILE NO' || u === 'FILE' || u === 'PO' || u === 'PO NO' || u === 'STYLE') break;
+            if (row[j]) return row[j];
+          }
+          return '';
+        };
+        const fileIdx = upperRow.findIndex((c) => c === 'FILE NO' || c === 'FILE');
+        const poIdx = upperRow.findIndex((c) => c === 'PO' || c === 'PO NO');
+        const styleIdx = upperRow.findIndex((c) => c === 'STYLE');
+
+        if (fileIdx !== -1) currentFileNo = readNextVal(fileIdx) || currentFileNo;
+        if (poIdx !== -1) currentPo = readNextVal(poIdx) || currentPo;
+        if (styleIdx !== -1) currentStyle = readNextVal(styleIdx) || currentStyle;
+        currentColor = '';
+        continue;
+      }
+
+      // Detect column header row (COLOR | SIZE | DIA | FILE REQ ...)
+      if (upperRow.includes('COLOR') && upperRow.includes('SIZE')) {
+        const nextMap = { ...colMap };
+        upperRow.forEach((h, c) => {
+          if (h === 'COLOR') nextMap.color = c;
+          else if (h === 'SIZE') nextMap.size = c;
+          else if (h === 'DIA') nextMap.dia = c;
+          else if (h.includes('FILE REQ')) nextMap.fileReq = c;
+          else if (h.includes('OVER CON')) nextMap.overCon = c;
+          else if (
+            h.includes('ADDITIONAL') ||
+            h.includes('ADD/') ||
+            h.includes('NEED ADD') ||
+            h.includes('REPLACE')
+          ) nextMap.addReplace = c;
+          else if (h.includes('TOTAL REQ')) nextMap.totalReq = c;
+          else if (h.includes('STORE RCVD')) nextMap.storeRcvd = c;
+          else if (h.includes('RCVD BALANCE')) nextMap.rcvdBal = c;
+          else if (h.includes('CUTTING SUPPLY')) nextMap.cuttingSupply = c;
+          else if (h.includes('STORE IN HAND')) nextMap.storeInHand = c;
+          else if (h.includes('REQ-SUP') || h.includes('REQ SUP')) nextMap.reqSupBal = c;
+          else if (h.includes('REMARK')) nextMap.remarks = c;
+        });
+        colMap = nextMap;
+        continue;
+      }
+
+      const rawColor = row[colMap.color] || '';
+      if (rawColor && !/^total$/i.test(rawColor)) {
+        currentColor = rawColor;
+      }
+
+      const sizeVal = row[colMap.size] || '';
+      const diaVal = row[colMap.dia] || '';
+      const isCrossRow = /^cross$/i.test(sizeVal);
+      const isTotalRow =
+        !isCrossRow &&
+        ((!sizeVal && !diaVal) ||
+          /^total$/i.test(rawColor) ||
+          /^total$/i.test(sizeVal));
+
+      const parseNum = (idx: number) => {
+        const clean = (row[idx] || '').replace(/,/g, '');
+        const n = parseFloat(clean);
+        return isNaN(n) ? 0 : n;
+      };
+
+      const fmtWithUnit = (idx: number, hasUnitCol = true) => {
+        const v = row[idx] || '';
+        if (!v) return '-';
+        const u = hasUnitCol ? (row[idx + 1] || '') : '';
+        return u ? `${v} ${u}` : v;
+      };
+
+      const blockKey = `${currentFileNo || 'FILE'}___${currentPo || 'PO'}___${currentStyle || 'STYLE'}`;
+      parsedRows.push({
+        _tabSource: tabName,
+        _uniqueKey: `${tabName}___${blockKey}___${rIdx}`,
+        _isFabricUpdateRow: true,
+        _isTotalRow: isTotalRow,
+        _isCrossRow: isCrossRow,
+        _blockKey: blockKey,
+        'File No': currentFileNo || '-',
+        PO: currentPo || '-',
+        STYLE: currentStyle || '-',
+        COLOR: /^total$/i.test(rawColor) ? 'TOTAL' : (currentColor || '-'),
+        SIZE: isTotalRow ? 'TOTAL' : (sizeVal || '-'),
+        DIA: diaVal || '-',
+        'FILE REQ': fmtWithUnit(colMap.fileReq, true),
+        'OVER CON': row[colMap.overCon] || '-',
+        'Need Additional/ Replace': row[colMap.addReplace] || '-',
+        'TOTAL REQ QTY': fmtWithUnit(colMap.totalReq, true),
+        'STORE RCVD': fmtWithUnit(colMap.storeRcvd, true),
+        'RCVD BALANCE': fmtWithUnit(colMap.rcvdBal, true),
+        'CUTTING SUPPLY': fmtWithUnit(colMap.cuttingSupply, true),
+        'STORE IN HAND': fmtWithUnit(colMap.storeInHand, true),
+        'REQ-SUP BALANCE': fmtWithUnit(colMap.reqSupBal, true),
+        REMARKS: row[colMap.remarks] || '',
+        _fileReqNum: parseNum(colMap.fileReq),
+        _overConNum: parseNum(colMap.overCon),
+        _addReplaceNum: parseNum(colMap.addReplace),
+        _totalReqNum: parseNum(colMap.totalReq),
+        _storeRcvdNum: parseNum(colMap.storeRcvd),
+        _rcvdBalNum: parseNum(colMap.rcvdBal),
+        _cuttingSupplyNum: parseNum(colMap.cuttingSupply),
+        _storeInHandNum: parseNum(colMap.storeInHand),
+        _reqSupBalNum: parseNum(colMap.reqSupBal),
+      });
+    }
+
+    return parsedRows;
+  };
+
   // Helper to fetch and parse a single tab's CSV with cache-busting & fast timeout protection
   const parseSingleTab = async (tabItem: TabItem): Promise<any[]> => {
-    // Direct gviz CSV endpoint (returns 200 CORS CSV without googleusercontent redirect 400 errors)
-    const csvUrl = `${SHEET_BASE}/gviz/tq?tqx=out:csv&gid=${tabItem.gid}&_cb=${Date.now()}`;
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8500);
+    const isFabricUpdateSheet =
+      tabItem.gid === '1394969873' ||
+      tabItem.gid === '1755552135' ||
+      isBrFabricUpdateTab(tabItem.name);
 
-    try {
-      const response = await fetch(csvUrl, {
-        signal: controller.signal,
-        cache: 'no-store',
-      });
-      clearTimeout(timeoutId);
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status} on tab ${tabItem.name}`);
-      }
-      const csvText = await response.text();
-      const trimmed = csvText.trim();
-      if (trimmed.startsWith('<!DOCTYPE html') || trimmed.startsWith('<html')) {
-        throw new Error(`Google Sheet returned temporary HTML for ${tabItem.name}`);
-      }
+    // For BR FABRIC UPDATE, export?format=csv preserves all text headers/labels (gviz strips text headers in numeric columns).
+    // Standard buyer PO tabs continue using direct gviz CSV endpoint.
+    const primaryUrl = isFabricUpdateSheet
+      ? `${SHEET_BASE}/export?format=csv&gid=${tabItem.gid}&_cb=${Date.now()}`
+      : `${SHEET_BASE}/gviz/tq?tqx=out:csv&gid=${tabItem.gid}&_cb=${Date.now()}`;
+    const fallbackUrl = `${SHEET_BASE}/gviz/tq?tqx=out:csv&gid=${tabItem.gid}&_cb=${Date.now()}`;
 
-      return new Promise((resolve) => {
-        // Parse with header: false to avoid PapaParse "Duplicate headers found and renamed." warnings
-        // on Google Sheets that contain blank or repeated column headers
-        Papa.parse<string[]>(csvText, {
-          header: false,
-          skipEmptyLines: 'greedy',
-          complete: (results) => {
-            const rawRows = results.data;
-            if (!Array.isArray(rawRows) || rawRows.length < 2) {
-              resolve([]);
-              return;
-            }
-
-            const headerRow = rawRows[0] || [];
-            const colNormKeys = headerRow.map((rawHeader) =>
-              normalizeHeader(String(rawHeader ?? ''))
-            );
-
-            const cleaned = rawRows
-              .slice(1)
-              .map((cells, idx) => {
-                if (!Array.isArray(cells)) return null;
-                const newRow: any = { _tabSource: tabItem.name };
-                for (let c = 0; c < cells.length; c++) {
-                  const normKey = colNormKeys[c];
-                  if (!normKey) continue;
-                  const rawVal = cells[c];
-                  const cellStr = typeof rawVal === 'string' ? rawVal.trim() : rawVal;
-                  if (
-                    cellStr !== undefined &&
-                    cellStr !== null &&
-                    cellStr !== '' &&
-                    (newRow[normKey] === undefined || newRow[normKey] === '')
-                  ) {
-                    newRow[normKey] = cellStr;
-                  }
-                }
-                // Skip repeated header rows embedded mid-sheet
-                if (
-                  String(newRow['PO'] || '').trim().toUpperCase() === 'PO' &&
-                  String(newRow['STYLE'] || '').trim().toUpperCase() === 'STYLE'
-                ) {
-                  return null;
-                }
-                // Assign a unique row ID for line allocation
-                newRow._uniqueKey = getOrderRowKey(newRow, idx);
-                return newRow;
-              })
-              .filter(
-                (row) =>
-                  row &&
-                  Object.values(row).some(
-                    (v) =>
-                      v !== undefined &&
-                      v !== null &&
-                      v !== '' &&
-                      v !== row._tabSource &&
-                      v !== row._uniqueKey
-                  )
-              );
-            resolve(cleaned);
-          },
-          error: () => resolve([])
+    const fetchCsvText = async (url: string): Promise<string> => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8500);
+      try {
+        const response = await fetch(url, {
+          signal: controller.signal,
+          cache: 'no-store',
         });
-      });
-    } catch (err) {
-      clearTimeout(timeoutId);
-      throw err;
+        clearTimeout(timeoutId);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} on tab ${tabItem.name}`);
+        }
+        const csvText = await response.text();
+        const trimmed = csvText.trim();
+        if (trimmed.startsWith('<!DOCTYPE html') || trimmed.startsWith('<html')) {
+          throw new Error(`Google Sheet returned temporary HTML for ${tabItem.name}`);
+        }
+        return csvText;
+      } catch (err) {
+        clearTimeout(timeoutId);
+        throw err;
+      }
+    };
+
+    let csvText: string;
+    try {
+      csvText = await fetchCsvText(primaryUrl);
+    } catch (primaryErr) {
+      if (isFabricUpdateSheet) {
+        csvText = await fetchCsvText(fallbackUrl);
+      } else {
+        throw primaryErr;
+      }
     }
+
+    return new Promise((resolve) => {
+      // Parse with header: false to avoid PapaParse "Duplicate headers found and renamed." warnings
+      // on Google Sheets that contain blank or repeated column headers
+      Papa.parse<string[]>(csvText, {
+        header: false,
+        skipEmptyLines: 'greedy',
+        complete: (results) => {
+          const rawRows = results.data;
+          if (!Array.isArray(rawRows) || rawRows.length < 2) {
+            resolve([]);
+            return;
+          }
+
+          if (isFabricUpdateSheet) {
+            resolve(parseBrFabricUpdateRows(rawRows, tabItem.name));
+            return;
+          }
+
+          const headerRow = rawRows[0] || [];
+          const colNormKeys = headerRow.map((rawHeader) =>
+            normalizeHeader(String(rawHeader ?? ''))
+          );
+
+          const cleaned = rawRows
+            .slice(1)
+            .map((cells, idx) => {
+              if (!Array.isArray(cells)) return null;
+              const newRow: any = { _tabSource: tabItem.name };
+              for (let c = 0; c < cells.length; c++) {
+                const normKey = colNormKeys[c];
+                if (!normKey) continue;
+                const rawVal = cells[c];
+                const cellStr = typeof rawVal === 'string' ? rawVal.trim() : rawVal;
+                if (
+                  cellStr !== undefined &&
+                  cellStr !== null &&
+                  cellStr !== '' &&
+                  (newRow[normKey] === undefined || newRow[normKey] === '')
+                ) {
+                  newRow[normKey] = cellStr;
+                }
+              }
+              // Skip repeated header rows embedded mid-sheet
+              if (
+                String(newRow['PO'] || '').trim().toUpperCase() === 'PO' &&
+                String(newRow['STYLE'] || '').trim().toUpperCase() === 'STYLE'
+              ) {
+                return null;
+              }
+              // Assign a unique row ID for line allocation
+              newRow._uniqueKey = getOrderRowKey(newRow, idx);
+              return newRow;
+            })
+            .filter(
+              (row) =>
+                row &&
+                Object.values(row).some(
+                  (v) =>
+                    v !== undefined &&
+                    v !== null &&
+                    v !== '' &&
+                    v !== row._tabSource &&
+                    v !== row._uniqueKey
+                )
+            );
+          resolve(cleaned);
+        },
+        error: () => resolve([])
+      });
+    });
   };
 
   // Fetch all tabs in parallel with Stale-While-Revalidate and automatic self-healing:
@@ -554,11 +743,12 @@ export default function App() {
     return () => clearInterval(intervalId);
   }, [isAutoRefreshEnabled, syncAllData]);
 
-  // Master list of all orders across all tabs (guaranteed unique _uniqueKey)
+  // Master list of all buyer PO orders across buyer tabs (excludes fabric-tracking sub-sheet BR FABRIC UPDATE)
   const allMasterOrders = useMemo(() => {
     const list: any[] = [];
     const seenKeys = new Set<string>();
     Object.entries(tabsData).forEach(([tabName, rows]) => {
+      if (isBrFabricUpdateTab(tabName)) return;
       rows.forEach((r, idx) => {
         let key = getOrderRowKey({ ...r, _tabSource: tabName }, idx);
         if (seenKeys.has(key)) {
@@ -741,8 +931,9 @@ export default function App() {
     });
   };
 
-  // Determine if Universal Search mode is active
-  const isUniversalSearchActive = globalFilter.trim().length > 0;
+  // Determine if Universal Search mode is active (when on BR FABRIC UPDATE, search stays scoped to BR FABRIC UPDATE)
+  const isUniversalSearchActive =
+    globalFilter.trim().length > 0 && !isBrFabricUpdateTab(activeTabName);
 
   // Active dataset for normal/all tabs
   const baseData = useMemo(() => {
@@ -1091,8 +1282,8 @@ export default function App() {
           </div>
         )}
 
-        {/* Summary KPI Cards (Hidden inside Fabric Receiving & Supply tab which has its own live Store KPIs) */}
-        {(activeTabName !== '__FABRIC_STORE__' || isUniversalSearchActive) && (
+        {/* Summary KPI Cards (Hidden inside Fabric Receiving & Supply and BR FABRIC UPDATE which have their own Store KPIs) */}
+        {((activeTabName !== '__FABRIC_STORE__' && !isBrFabricUpdateTab(activeTabName)) || isUniversalSearchActive) && (
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             {activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
               <>
@@ -1234,7 +1425,7 @@ export default function App() {
               )}
             </div>
 
-            {!(activeTabName === '__FABRIC_STORE__' && !isUniversalSearchActive) && (
+            {!( (activeTabName === '__FABRIC_STORE__' || isBrFabricUpdateTab(activeTabName)) && !isUniversalSearchActive) && (
               <div className="flex items-center gap-2.5 flex-wrap">
                 {activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
                   <>
@@ -1419,7 +1610,7 @@ export default function App() {
           ))}
         </nav>
 
-        {/* RENDER CONTENT: FABRIC STORE, LINE WISE UPDATE, OR STANDARD TABLE */}
+        {/* RENDER CONTENT: FABRIC STORE, BR FABRIC UPDATE, LINE WISE UPDATE, OR STANDARD TABLE */}
         {activeTabName === '__FABRIC_STORE__' && !isUniversalSearchActive ? (
           <FabricStoreTab
             allMasterOrders={allMasterOrders}
@@ -1431,6 +1622,13 @@ export default function App() {
               syncRackUrlParam(clean);
               setPublicRackCode(clean);
             }}
+          />
+        ) : isBrFabricUpdateTab(activeTabName) && !isUniversalSearchActive ? (
+          <BrFabricUpdateView
+            rows={(tabsData[activeTabName] || []) as BrFabricUpdateRow[]}
+            globalFilter={globalFilter}
+            isLoading={isLoading || isRefreshing}
+            onRefresh={() => syncAllData(false)}
           />
         ) : activeTabName === '__LINE_WISE__' && !isUniversalSearchActive ? (
           /* LINE WISE UPDATE VIEW */
@@ -2479,7 +2677,9 @@ export default function App() {
                       className="text-xs bg-slate-50 border border-slate-300 rounded-lg p-1.5 font-medium outline-none"
                     >
                       <option value="ALL">All Buyers</option>
-                      {tabs.map(t => (
+                      {tabs
+                        .filter(t => !isBrFabricUpdateTab(t.name))
+                        .map(t => (
                         <option key={t.name} value={t.name}>{t.name}</option>
                       ))}
                     </select>
